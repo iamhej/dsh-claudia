@@ -15,13 +15,17 @@ function json(res,status,data){res.writeHead(status,{'Content-Type':'application
 async function body(req){let length=0;const chunks=[];for await(const chunk of req){length+=chunk.length;if(length>65536)throw Object.assign(new Error('请求内容太长'),{status:413});chunks.push(chunk);}try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');if(!value||Array.isArray(value)||typeof value!=='object')throw new Error();return value;}catch{throw Object.assign(new Error('无效 JSON 对象'),{status:400});}}
 function requiredText(text,max){if(typeof text!=='string'||!text.trim()||text.length>max)throw Object.assign(new Error(`请输入 1—${max} 字的内容`),{status:400});return text.trim();}
 
-export async function startServer({dataDir,port=4317,createRuntime}) {
+export async function startServer({dataDir,port=4317,createRuntime,createServices,home='',profile='web',openFolder,openHarness,getHostUrl=()=>'',hasOtherAgents=()=>false}) {
   const csrfToken=randomBytes(32).toString('hex');
   const store=new Store(resolve(dataDir,'claudia.sqlite'));
   const runtime=createRuntime(store);
-  let active=null,configuring=false,closing=false,actualPort;
+  let active=null,configuring=false,closing=false,drainingUntil=0,actualPort,services={};
+  const boolKeys=['allowContext','activityEnabled','reflectionEnabled','autoUpdateEnabled','memorySuggestionsEnabled'];
+  const busy=()=>!!(active||configuring||Date.now()<drainingUntil||services.maintenance?.status().running);
+  const hostBusy=()=>{try{return hasOtherAgents(runtime);}catch{return true;}};
+  const preferences=()=>Object.fromEntries(boolKeys.map(key=>[key,store.get(key,false)]));
   const readBody=async req=>{const data=await body(req);if(closing)throw Object.assign(new Error('插件正在关闭'),{status:503});return data;};
-  const publicSettings=()=>({assistantName:store.get('assistantName','Claudia'),allowContext:store.get('allowContext',false),...runtime.selection()});
+  const publicSettings=()=>({assistantName:store.get('assistantName','Claudia'),...preferences(),...runtime.selection()});
   const safeSettings=()=>{try{return publicSettings();}catch{return {assistantName:store.get('assistantName','Claudia'),allowContext:store.get('allowContext',false),provider:'',model:''};}};
   const validToken=value=>{const buffer=Buffer.from(value||'');const expected=Buffer.from(csrfToken);return buffer.length===expected.length&&timingSafeEqual(buffer,expected);};
   const server=http.createServer(async(req,res)=>{
@@ -36,8 +40,21 @@ export async function startServer({dataDir,port=4317,createRuntime}) {
       if(!['GET','POST','DELETE'].includes(req.method))return json(res,405,{error:'不支持的请求方法'});
       if(req.method!=='GET'&&(!validToken(req.headers['x-claudia-token'])||!req.headers['content-type']?.startsWith('application/json')))return json(res,403,{error:'缺少本机安全凭证'});
       if(req.method==='GET'&&path==='/api/bootstrap')return json(res,200,{csrfToken});
-      if(req.method==='GET'&&path==='/api/state')return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),sessionId:store.get('sessionId')});
-      if(req.method==='GET'&&path==='/api/health')return json(res,200,{ok:true,plugin:'dsh-claudia',version:'0.2.1',pid:process.pid,runtime:await runtime.status()});
+      if(req.method==='GET'&&path==='/api/state'){
+        const end=new Date(),start=new Date(end.getTime()-86400000);
+        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),reflections:store.reflections(),memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false}});
+      }
+      if(req.method==='GET'&&path==='/api/health')return json(res,200,{ok:true,plugin:'dsh-claudia',version:'0.3.0',pid:process.pid,home,profile,busy:busy()||hostBusy(),runtime:await runtime.status()});
+      if(req.method==='POST'&&path==='/api/prepare-restart'){await readBody(req);if(busy()||hostBusy())return json(res,409,{error:'宿主仍有活动会话或任务，请稍后重启'});drainingUntil=Date.now()+15000;return json(res,200,{ok:true,draining:true});}
+      if(req.method==='POST'&&path==='/api/todos'){const data=await readBody(req);return json(res,201,store.addTodo(requiredText(data.text,2000)));}
+      if(req.method==='POST'&&path.startsWith('/api/todos/')){const data=await readBody(req);if(!['todo','done','dismissed'].includes(data.status))return json(res,400,{error:'待办状态无效'});return json(res,200,store.updateTodo(path.split('/').pop(),data.status,data.revision));}
+      if(req.method==='POST'&&path.startsWith('/api/profiles/')){const data=await readBody(req);if(busy())return json(res,409,{error:'请等待当前任务结束后修改设定'});const name=path.split('/').pop();if(!['soul','user','system'].includes(name))return json(res,400,{error:'设定文件无效'});if(typeof data.text!=='string'||data.text.length>12000)return json(res,400,{error:'设定最多12000字符'});return json(res,200,store.saveProfile(name,data.text,data.revision));}
+      if(req.method==='POST'&&path==='/api/reflections/run'){await readBody(req);if(busy())return json(res,409,{error:'请等待当前任务结束'});if(!store.get('reflectionEnabled',false))return json(res,400,{error:'请先在设置开启每日回顾并确认模型数据分享'});return json(res,200,await services.maintenance.runReflection());}
+      if(req.method==='POST'&&path.startsWith('/api/reflections/')){const data=await readBody(req),entry=store.reflections().find(e=>e.id===path.split('/').pop());if(!entry)return json(res,404,{error:'回顾不存在'});return json(res,200,store.saveReflection({...entry,text:requiredText(data.text,12000)},data.revision));}
+      if(req.method==='POST'&&path.startsWith('/api/memory-candidates/')){const data=await readBody(req);if(typeof data.accept!=='boolean')return json(res,400,{error:'确认选项无效'});return json(res,200,store.decideCandidate(path.split('/').pop(),data.accept));}
+      if(req.method==='POST'&&path==='/api/open-folder'){const data=await readBody(req);if(Object.keys(data).length)return json(res,400,{error:'打开文件夹不接受外部路径参数'});if(!openFolder)return json(res,501,{error:'当前环境不能打开文件夹'});await openFolder(dataDir);return json(res,200,{ok:true});}
+      if(req.method==='POST'&&path==='/api/open-harness'){await readBody(req);if(!openHarness)return json(res,501,{error:'未找到宿主界面'});await openHarness();return json(res,200,{ok:true});}
+      if(req.method==='POST'&&path==='/api/background'){const data=await readBody(req);if(typeof data.enabled!=='boolean')return json(res,400,{error:'后台开关无效'});if(busy())return json(res,409,{error:'请等待当前任务结束'});if(!services.background)return json(res,501,{error:'当前环境不支持后台服务'});configuring=true;try{return json(res,200,await services.background.setEnabled(data.enabled));}finally{configuring=false;}}
       if(req.method==='POST'&&path==='/api/journal'){
         const data=await readBody(req),text=requiredText(data.text,5000),date=new Date(data.occurredAt||Date.now());
         if(!Number.isFinite(date.getTime()))return json(res,400,{error:'记录时间无效'});
@@ -48,15 +65,21 @@ export async function startServer({dataDir,port=4317,createRuntime}) {
       if(req.method==='DELETE'&&path.startsWith('/api/memories/'))return json(res,store.deleteMemory(path.split('/').pop())?200:404,{ok:true});
       if(req.method==='POST'&&path==='/api/settings'){
         const data=await readBody(req);
-        if(Object.keys(data).some(key=>!['assistantName','allowContext'].includes(key)))return json(res,400,{error:'插件不接收模型端点或 API key，请在 Harness 中配置'});
-        if(active||configuring)return json(res,409,{error:'请等待当前回复或配置操作结束'});
+        if(Object.keys(data).some(key=>!['assistantName',...boolKeys].includes(key)))return json(res,400,{error:'插件不接收模型端点或 API key，请在 Harness 中配置'});
+        if(busy())return json(res,409,{error:'请等待当前回复或配置操作结束'});
         const name=normalizeName(data.assistantName===undefined?store.get('assistantName','Claudia'):data.assistantName);
-        if(data.allowContext!==undefined&&typeof data.allowContext!=='boolean')return json(res,400,{error:'上下文开关必须是布尔值'});
-        store.set('assistantName',name);if(data.allowContext!==undefined)store.set('allowContext',data.allowContext);
-        return json(res,200,{settings:safeSettings()});
+        if(boolKeys.some(key=>data[key]!==undefined&&typeof data[key]!=='boolean'))return json(res,400,{error:'开关必须是布尔值'});
+        configuring=true;
+        try{
+          if(data.assistantName!==undefined)store.set('assistantName',name);
+          for(const key of boolKeys)if(data[key]!==undefined)store.set(key,data[key]);
+          store.set('reflectionSources',['journal','todos',...(store.get('activityEnabled',false)?['activity']:[])]);
+          if(data.activityEnabled!==undefined)await services.activity?.setEnabled(data.activityEnabled);
+          return json(res,200,{settings:safeSettings()});
+        }finally{configuring=false;}
       }
       if(req.method==='POST'&&path==='/api/session/reset'){
-        await readBody(req);if(active||configuring)return json(res,409,{error:'请等待当前回复或配置操作结束'});
+        await readBody(req);if(busy())return json(res,409,{error:'请等待当前回复或配置操作结束'});
         configuring=true;try{await runtime.release(store.get('sessionId'));return json(res,200,{sessionId:store.resetSession()});}finally{configuring=false;}
       }
       if(req.method==='POST'&&path==='/api/cancel'){
@@ -67,7 +90,7 @@ export async function startServer({dataDir,port=4317,createRuntime}) {
       if(req.method==='POST'&&path==='/api/chat'){
         const data=await readBody(req),text=requiredText(data.text,12000);
         if(data.contextIds!==undefined&&(!Array.isArray(data.contextIds)||data.contextIds.length>30||data.contextIds.some(id=>typeof id!=='string')))return json(res,400,{error:'附件列表无效'});
-        if(active||configuring)return json(res,409,{error:`${store.get('assistantName','Claudia')} 正在回复，请先停止或等待完成`});
+        if(busy())return json(res,409,{error:`${store.get('assistantName','Claudia')} 正在回复，请先停止或等待完成`});
         const sessionId=store.get('sessionId'),run={id:randomUUID(),sessionId,cancelled:false};active=run;
         run.done=new Promise(resolve=>{run.finish=resolve;});
         try {
@@ -104,5 +127,6 @@ export async function startServer({dataDir,port=4317,createRuntime}) {
   });
   try {await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});actualPort=server.address().port;}
   catch(error){store.close();await runtime.close();throw error;}
-  return {server,store,runtime,url:`http://127.0.0.1:${actualPort}`,async close(){closing=true;const run=active;if(run){run.cancelled=true;await runtime.cancel(run.sessionId).catch(()=>{});}await runtime.close();await run?.done;await new Promise(resolve=>{server.closeAllConnections();server.close(resolve);});store.close();}};
+  try{services=createServices?.({store,runtime,isBusy:()=>!!(active||configuring||closing||Date.now()<drainingUntil),pluginPort:actualPort})||{};}catch(error){await new Promise(r=>server.close(r));store.close();await runtime.close();throw error;}
+  return {server,store,runtime,services,url:`http://127.0.0.1:${actualPort}`,async close(){closing=true;const run=active;if(run){run.cancelled=true;await runtime.cancel(run.sessionId).catch(()=>{});}if(services.maintenance?.session)await runtime.cancel(services.maintenance.session).catch(()=>{});await services.maintenance?.close();await services.activity?.close();await runtime.close();await run?.done;await new Promise(resolve=>{server.closeAllConnections();server.close(resolve);});store.close();}};
 }

@@ -78,6 +78,7 @@
         <nav class="tab-bar" role="tablist" aria-label="个人空间标签">
           <button id="tab-today" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="panel-today" data-tab="today">Today</button>
           <button id="tab-journal" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-journal" data-tab="journal" tabindex="-1">Journal</button>
+          <button id="tab-todo" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-todo" data-tab="todo" tabindex="-1">Todo</button>
           <button id="tab-memories" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-memories" data-tab="memories" tabindex="-1">记忆</button>
           <button id="tab-capabilities" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-capabilities" data-tab="capabilities" tabindex="-1">能力</button>
         </nav>
@@ -104,6 +105,10 @@
             <div class="section-heading"><h3><svg class="icon"><use href="#i-book"/></svg>最近留下的片段</h3><button class="text-button" type="button" data-go="journal">查看 Journal<svg class="icon"><use href="#i-arrow"/></svg></button></div>
             <div id="today-journal"></div>
           </article>
+          <article class="glass-card reflection-preview-card">
+            <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>最新每日回顾</h3><button id="today-reflection-open" class="text-button" type="button">查看回顾<svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            <div id="today-reflection"></div>
+          </article>
           <article class="glass-card memory-preview-card">
             <div class="section-heading"><h3><svg class="icon"><use href="#i-memory"/></svg>值得记住的你</h3><button class="text-button" type="button" data-go="memories">管理记忆<svg class="icon"><use href="#i-arrow"/></svg></button></div>
             <p class="card-description compact">只展示你亲自确认过的内容，不替你下定义。</p>
@@ -114,6 +119,11 @@
 
         <section id="panel-journal" class="tab-panel" role="tabpanel" aria-labelledby="tab-journal" tabindex="0" hidden>
           <div class="page-intro"><p class="eyebrow">JOURNAL / 日常切片</p><h2>小事，也值得留一笔。</h2><p>不用完整，不用漂亮，写下来就好。</p></div>
+          <nav class="subtab-bar" role="tablist" aria-label="Journal 子视图">
+            <button id="journal-tab-notes" class="subtab active" type="button" role="tab" aria-selected="true" aria-controls="journal-notes" data-journal-view="notes">随手记录</button>
+            <button id="journal-tab-reflections" class="subtab" type="button" role="tab" aria-selected="false" aria-controls="journal-reflections" data-journal-view="reflections" tabindex="-1">每日回顾</button>
+          </nav>
+          <section id="journal-notes" role="tabpanel" aria-labelledby="journal-tab-notes">
           <article class="glass-card entry-card">
             <form id="journal-form">
               <label class="field-label" for="journal-input">此刻，想记下什么？</label>
@@ -126,11 +136,51 @@
           <div class="list-heading"><h3>我的记录</h3><span id="journal-count">正在读取</span></div>
           <div id="journal-list" class="entry-list"></div>
           <p class="space-footnote">选择「带入对话」只会附加片段，仍需你手动发送。</p>
+          </section>
+          <section id="journal-reflections" role="tabpanel" aria-labelledby="journal-tab-reflections" hidden>
+            <article class="glass-card">
+              <div class="section-heading"><h3>把过去一天，轻轻整理一下。</h3><button id="reflection-run" class="secondary-button" type="button" disabled>生成一次回顾</button></div>
+              <p class="field-help">自动回顾默认关闭；开启后每天本地时间 05:00，使用过去 24 小时的 Journal、Todo 和可选应用时长。生成会发送这些内容给宿主模型并产生费用；手动生成也会单独确认。</p>
+              <p id="reflection-status" class="field-help" role="status">正在读取回顾状态…</p>
+              <p id="reflection-run-feedback" class="form-feedback" role="status" hidden></p>
+            </article>
+            <article class="glass-card">
+              <div class="reflection-filters"><div class="time-field"><label for="reflection-date">按回顾结束日期筛选 · 本地时间</label><input id="reflection-date" type="date"></div><button id="reflection-date-clear" class="text-button" type="button">全部日期</button><button id="reflections-refresh" class="text-button" type="button">刷新回顾</button></div>
+              <label class="field-label" for="reflection-select">已保存的回顾</label>
+              <select id="reflection-select" class="select-input" aria-describedby="reflection-meta" disabled></select>
+              <div id="reflection-empty"></div>
+              <div id="reflection-detail" hidden>
+                <p id="reflection-meta" class="field-help"></p>
+                <p id="reflection-body" class="entry-text reflection-body"></p>
+                <button id="reflection-edit" class="text-button" type="button">编辑这篇回顾</button>
+                <form id="reflection-form" hidden>
+                  <label class="field-label" for="reflection-input">回顾正文 · 本地 Markdown 原文</label>
+                  <textarea id="reflection-input" class="note-input reflection-input" rows="10" spellcheck="false"></textarea>
+                  <p id="reflection-conflict" class="form-feedback is-error" role="status" hidden></p>
+                  <div class="form-actions"><button id="reflection-reload" class="secondary-button" type="button">载入最新版本</button><button id="reflection-save" class="primary-button" type="submit" disabled>保存回顾</button></div>
+                </form>
+                <p id="reflection-feedback" class="form-feedback" role="status" hidden></p>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <section id="panel-todo" class="tab-panel" role="tabpanel" aria-labelledby="tab-todo" tabindex="0" hidden>
+          <div class="page-intro"><p class="eyebrow">TODO / 一件一件来</p><h2>想做的事，先放在这里。</h2><p>完成可以撤销，忽略是另一种选择。记录都留着。</p></div>
+          <article class="glass-card entry-card">
+            <form id="todo-form"><label class="field-label" for="todo-input">下一件小事</label><div class="todo-composer"><input id="todo-input" type="text" maxlength="2000" placeholder="写下一件事，按 Enter 添加…" autocomplete="off" enterkeyhint="done" required><button id="todo-add" class="primary-button" type="submit" disabled>添加</button></div><p id="todo-feedback" class="form-feedback" role="status" hidden></p></form>
+          </article>
+          <div class="list-heading"><h3>待办</h3><span id="todo-count">正在读取</span></div>
+          <div id="todo-list" class="entry-list"></div>
+          <details id="todo-done" class="archive-section"><summary id="todo-done-summary">已完成 · 0</summary><div id="todo-done-list" class="entry-list"></div></details>
+          <details id="todo-dismissed" class="archive-section"><summary id="todo-dismissed-summary">已忽略 · 0</summary><div id="todo-dismissed-list" class="entry-list"></div></details>
+          <p class="space-footnote">勾选表示完成；「忽略」不算完成。折叠归档，不删除记录。</p>
         </section>
 
         <section id="panel-memories" class="tab-panel" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden>
           <div class="page-intro"><p class="eyebrow">MEMORY / 关于你</p><h2>记住什么，由你决定。</h2><p>偏好、习惯、想被理解的部分，都可以慢慢补充。</p></div>
-          <div class="soft-notice"><svg class="icon"><use href="#i-lock"/></svg><div><strong>自动长期记忆提取未启用</strong><p>这里的每条记忆都需要你手动确认。保存记忆不等于发送给模型。</p></div></div>
+          <div class="soft-notice"><svg class="icon"><use href="#i-lock"/></svg><div><strong id="memory-suggestions-status">记忆候选默认关闭</strong><p>自动功能只生成候选，不自动写入长期记忆。每条候选都需要你亲自接受；本地保存不等于立即发送给模型。</p></div></div>
+          <article class="glass-card"><div class="section-heading"><h3>等待你确认的候选</h3><span id="memory-candidate-count" class="quiet-tag">尚未读取</span></div><div id="memory-candidate-list" class="entry-list"></div><p id="memory-candidate-feedback" class="form-feedback" role="status" hidden></p></article>
           <article class="glass-card entry-card">
             <form id="memory-form">
               <label id="memory-input-label" class="field-label" for="memory-input">想让 Claudia 记住的一件事</label>
@@ -154,11 +204,19 @@
             <button id="capabilities-settings" class="secondary-button" type="button">查看名字与宿主配置<svg class="icon"><use href="#i-arrow"/></svg></button>
           </article>
           <article class="glass-card">
-            <div class="section-heading"><h3><svg class="icon"><use href="#i-link"/></svg>外部连接器</h3><span class="quiet-tag">尚未配置</span></div>
-            <p class="card-description">当前没有接入邮箱、日历、文件或第三方应用，不会读取这些来源的数据。</p>
-            <div class="capability-line"><span>邮箱与日历</span><span>未连接</span></div><div class="capability-line"><span>文件与第三方服务</span><span>未连接</span></div>
+            <div class="section-heading"><h3><svg class="icon"><use href="#i-link"/></svg>宿主配置 ≠ 插件权限</h3><span class="quiet-tag">权限独立</span></div>
+            <p class="card-description">模型齿轮与连接器配置由 Harness 宿主管理。Claudia 未开放任意外部工具；宿主装有连接器，不代表本插件获准调用，也不代表这里已连接。此页不枚举或猜测宿主的第三方账号。</p>
+            <button id="open-harness" class="secondary-button" type="button" disabled>打开 Harness<svg class="icon"><use href="#i-arrow"/></svg></button>
+            <p id="host-open-hint" class="field-help">由本机服务打开实际宿主已认证地址，不拼接模型或连接器深链。</p>
+            <p id="host-open-feedback" class="form-feedback" role="status" hidden></p>
           </article>
-          <article class="glass-card boundary-card"><h3>这个版本，专注几件小事。</h3><ul><li>在一个连续的对话里交流</li><li>手动记录 Journal，选择片段带入对话</li><li>由你确认保存和删除长期记忆</li></ul><p>没有自动记忆提取，也没有后台自主执行任务。</p></article>
+          <article class="glass-card">
+            <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>应用使用时长</h3><span id="activity-badge" class="quiet-tag">尚未读取</span></div>
+            <dl class="runtime-details"><div><dt>实际采集开关</dt><dd id="activity-enabled-state">—</dd></div><div><dt>运行状态</dt><dd id="activity-running-state">—</dd></div><div><dt>来源</dt><dd id="activity-source">—</dd></div><div><dt>已汇总时长</dt><dd id="activity-total">—</dd></div></dl>
+            <div id="activity-apps"></div><p id="activity-error" class="form-feedback is-error" role="status" hidden></p>
+            <p class="field-help">默认关闭。仅记录应用名称与前台使用时长，不采集窗口标题、网页、屏幕、键盘或应用正文。设置中的开关保存后，以此处宿主报告为准。</p>
+          </article>
+          <article class="glass-card boundary-card"><h3>任务运行，依赖宿主在线。</h3><ul><li>连续对话、Journal 与 Todo 各自保留</li><li>每日回顾、记忆候选和稳定版更新均需主动开启</li><li>人格文件在本地，但会作为模型上下文发送</li></ul><p>关闭浏览器不等于停止宿主；退出宿主后不能保证定时执行。可在设置中确认启用 macOS 后台服务以保持运行，电脑关机或休眠期间不保证执行。</p></article>
         </section>
       </div>
     </section>
@@ -167,7 +225,7 @@
   <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title">
     <header class="modal-header"><div><p class="eyebrow">SETTINGS / 名字与隐私</p><h2 id="settings-title">让陪伴，有一个名字。</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="关闭设置"><svg class="icon"><use href="#i-close"/></svg></button></header>
     <form id="settings-form" autocomplete="off">
-      <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含控制字符或换行；留空恢复默认名字。保存后在本机持久保留，改名不会清空对话、Journal 或记忆，无需配置模型。</p></div>
+      <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含控制字符或换行；留空恢复默认名字。名字唯一来源是 soul 的 assistantName frontmatter；这里通过设置接口写入同一来源，保存后刷新 soul。不会清空任何对话或记录，无需配置模型。</p></div>
       <section class="host-settings" aria-labelledby="host-settings-title">
         <h3 id="host-settings-title">来自 Harness · 只读</h3>
         <p id="settings-assistant-description" class="field-help">Claudia 作为同进程插件复用 Harness 的模型与凭据，无需复制 Key，也不会在此读取或回显密钥。</p>
@@ -175,9 +233,36 @@
         <p id="settings-host-hint" class="field-help">模型配置需在 Harness 的模型设置中管理；打开或保存此设置不会连接模型或发送消息。</p>
       </section>
       <div class="context-setting"><label class="check-field"><input id="allow-context" type="checkbox"><span><strong>允许附带有限条日志与记忆原文</strong><small>仅在你主动发送对话时，优先附带手动选择的 Journal 原文，再自动附带最多 10 条最近日志和 10 条记忆原文及来源 ID，总计不超过 14000 字符。自动内容可能因预算省略；手动附件超额会提示减少附件，不会悄悄省略。未勾选时，仅发送手动附加的 Journal 原文。</small></span></label></div>
+      <section class="automation-settings" aria-labelledby="automation-title">
+        <h3 id="automation-title">由你开启的自动功能</h3>
+        <label class="check-field"><input id="activity-enabled" type="checkbox"><span><strong>记录应用使用时长 · 默认关闭</strong><small>只记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或应用正文。开启后可供每日回顾使用。</small></span></label>
+        <label class="check-field"><input id="reflection-enabled" type="checkbox"><span><strong>每日回顾 · 默认关闭</strong><small>每天本地时间 05:00，将过去 24 小时的 Journal、Todo 及可选应用时长交给宿主模型整理，会产生模型费用。关闭浏览器不等于停止宿主。</small></span></label>
+        <label class="check-field"><input id="auto-update-enabled" type="checkbox"><span><strong>自动更新稳定版 · 默认关闭</strong><small>每天本地时间 06:00 检查并自动安装稳定版，可能重启宿主、暂时中断服务。更新应保护已有数据；执行结果以宿主状态为准。</small></span></label>
+        <label class="check-field"><input id="memory-suggestions-enabled" type="checkbox"><span><strong>生成记忆候选 · 默认关闭</strong><small>只生成候选，不自动接受、不直接变成长期记忆；请到「记忆」逐条人工确认。若调用宿主模型处理内容，会产生费用。</small></span></label>
+        <p class="field-help">开关在「保存设置」后生效，不会自动安装后台服务。定时任务需要宿主持续运行；退出宿主后不能保证执行。启用下方后台服务可帮助保持运行。</p>
+        <p id="maintenance-status" class="field-help" role="status">正在读取自动任务状态…</p>
+      </section>
       <p id="settings-feedback" class="form-feedback" role="status" hidden></p>
       <div class="form-actions"><button id="settings-save" class="primary-button" type="submit" disabled>保存设置<svg class="icon"><use href="#i-check"/></svg></button></div>
     </form>
+    <section class="settings-section" aria-labelledby="profiles-title">
+      <div class="section-heading"><h3 id="profiles-title">人格与上下文文件</h3><button id="profiles-refresh" class="text-button" type="button">刷新版本</button></div>
+      <p class="field-help">soul / user / system 是本地文件，但会作为模型上下文发送给所配置的模型服务；不受上方日志与记忆开关限制。请勿填写密钥或不希望外发的隐私。编辑和保存本身不调用模型。</p>
+      <p class="field-help">soul 的 frontmatter 必须保留唯一 assistantName 字段。每份文件独立按 revision 保存；遇到外部修改会保留草稿并提示冲突，不覆盖新版本。</p>
+      <div id="profile-editors"></div>
+      <p id="profiles-feedback" class="form-feedback" role="status" hidden></p>
+    </section>
+    <section class="settings-section" aria-labelledby="data-title">
+      <div class="section-heading"><h3 id="data-title">本地数据位置</h3><button id="open-folder" class="secondary-button" type="button" disabled>打开文件夹</button></div>
+      <p id="data-directory" class="data-path">尚未读取</p><p id="folder-feedback" class="form-feedback" role="status" hidden></p>
+    </section>
+    <section class="settings-section" aria-labelledby="background-title">
+      <div class="section-heading"><h3 id="background-title">macOS 后台服务</h3><span id="background-state" class="quiet-tag">尚未读取</span></div>
+      <p class="field-help">与自动功能开关独立，首次不自动开启。仅支持 macOS；点击启用后还需确认安装系统 LaunchAgent。后台服务可帮助关闭浏览器后保持宿主运行，但不保证关机或休眠期间执行任务。</p>
+      <p id="background-error" class="form-feedback is-error" role="status" hidden></p>
+      <button id="background-toggle" class="secondary-button" type="button" disabled>启用后台服务…</button>
+      <p id="background-feedback" class="form-feedback" role="status" hidden></p>
+    </section>
     <div class="reset-section"><div><h3>重新开始模型上下文</h3><p>清空当前对话视图，保留本地记录与记忆。不会撤回已发送的内容。</p></div><button id="reset-session" class="text-button danger-text" type="button" disabled>重置对话</button></div>
   </dialog>
 

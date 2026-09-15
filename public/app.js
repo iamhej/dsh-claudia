@@ -3,12 +3,29 @@
 
   const $ = (id) => document.getElementById(id);
   const svgNS = 'http://www.w3.org/2000/svg';
-  const tabNames = ['today', 'journal', 'memories', 'capabilities'];
+  const tabNames = ['today', 'journal', 'todo', 'memories', 'capabilities'];
+  const profileNames = ['soul', 'user', 'system'];
+  const settingFields = {
+    allowContext: 'allow-context', activityEnabled: 'activity-enabled', reflectionEnabled: 'reflection-enabled',
+    autoUpdateEnabled: 'auto-update-enabled', memorySuggestionsEnabled: 'memory-suggestions-enabled'
+  };
   const defaultAssistantName = 'Claudia';
   const state = {
-    journal: [], memories: [], messages: [], runtime: {},
-    settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: ''
+    journal: [], memories: [], messages: [], todos: [], reflections: [], memoryCandidates: [], profiles: {}, runtime: {},
+    settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: '',
+    dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
+    background: { enabled: false, supported: false }, features: {}
   };
+  const pending = new Set();
+  const profileDrafts = new Map();
+  const reflectionDrafts = new Map();
+  let selectedReflectionId = '';
+  let journalView = 'notes';
+  let settingsNameBaseline = defaultAssistantName;
+  let settingsNameRevision;
+  let todoComposing = false;
+  let todoCompositionEndedAt = -Infinity;
+  let statusRefreshing = false;
   const attachments = new Set();
   const deleting = new Set();
   const feedbackMessages = new Map();
@@ -109,11 +126,12 @@
 
   function apiError(payload, status) {
     const supplied = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;
-    if (status === 401 || status === 403) {
-      return new Error('请求未获授权。请先重新加载页面以恢复本机安全校验；若模型请求仍失败，请回 Harness 的模型设置检查，无需在此填写密钥。');
-    }
-    if (typeof supplied === 'string' && supplied.trim()) return new Error(supplied.slice(0, 800));
-    return new Error(`本机服务未能完成请求（HTTP ${status}），请稍后重试。`);
+    let message = typeof supplied === 'string' && supplied.trim() ? supplied.slice(0, 800) : `本机服务未能完成请求（HTTP ${status}），请稍后重试。`;
+    if (status === 401 || status === 403) message = '请求未获授权。请先重新加载页面以恢复本机安全校验；若模型请求仍失败，请回 Harness 的模型设置检查，无需在此填写密钥。';
+    if (status === 409 || status === 412) message = `版本冲突或操作忙碌，未覆盖已有数据。${asText(supplied)}`;
+    const error = new Error(message);
+    error.status = status;
+    return error;
   }
 
   async function readJSON(response) {
@@ -129,7 +147,7 @@
     const mutation = method !== 'GET';
     if (mutation && !csrfToken) throw new Error('尚未完成本机安全校验，请重新加载页面。');
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    const timeout = window.setTimeout(() => controller.abort(), options.timeout || 20000);
     try {
       const response = await fetch(path, {
         method,
@@ -173,6 +191,13 @@
         if (typeof item.text !== 'string') continue;
         entry.text = item.text;
         if (type === 'journal') entry.occurredAt = asText(item.occurredAt);
+        if (type === 'todos') {
+          if (!['todo', 'done', 'dismissed'].includes(item.status)) continue;
+          entry.status = item.status;
+        }
+        if (type === 'reflections') Object.assign(entry, { start: asText(item.start), end: asText(item.end) });
+        if (type === 'memoryCandidates') Object.assign(entry, { source: asText(item.source), status: asText(item.status) });
+        entry.revision = item.revision;
       }
       unique.set(entry.id, entry);
     }
@@ -207,9 +232,38 @@
     const settings = payload.settings || {};
     // 仅接收公开元数据；不读取凭据对象或任何密钥字段。
     state.settings = {
+      // assistantName 是服务端从 soul frontmatter 解析的展示投影，不在浏览器另存名字。
       assistantName: asText(settings.assistantName).trim() || defaultAssistantName,
-      allowContext: settings.allowContext === true,
-      provider: asText(settings.provider), model: asText(settings.model)
+      provider: asText(runtime.provider ?? settings.provider), model: asText(runtime.model ?? settings.model)
+    };
+    for (const field of Object.keys(settingFields)) state.settings[field] = settings[field] === true;
+    state.features = {
+      todos: Array.isArray(payload.todos), reflections: Array.isArray(payload.reflections),
+      memoryCandidates: Array.isArray(payload.memoryCandidates), automation: Boolean(payload.maintenance),
+      background: Boolean(payload.background)
+    };
+    state.todos = entriesFrom(payload.todos, 'todos');
+    state.reflections = entriesFrom(payload.reflections, 'reflections');
+    state.memoryCandidates = entriesFrom(payload.memoryCandidates, 'memoryCandidates');
+    state.profiles = {};
+    for (const name of profileNames) {
+      const profile = payload.profiles?.[name];
+      if (typeof profile?.text === 'string') state.profiles[name] = { text: profile.text, revision: profile.revision };
+      syncDraft(profileDrafts.get(name), state.profiles[name]);
+    }
+    for (const [id, draft] of reflectionDrafts) syncDraft(draft, state.reflections.find((entry) => entry.id === id));
+    state.dataDirectory = asText(payload.dataDirectory);
+    state.hostUrl = asText(payload.hostUrl);
+    state.maintenance = payload.maintenance || {};
+    state.activity = payload.activity || {};
+    const summary = payload.activitySummary || {};
+    state.activitySummary = {
+      seconds: Number.isFinite(summary.seconds) ? Math.max(0, summary.seconds) : 0,
+      apps: Array.isArray(summary.apps) ? summary.apps.filter((app) => typeof app?.name === 'string' && Number.isFinite(app.seconds)) : []
+    };
+    state.background = {
+      enabled: payload.background?.enabled === true, supported: payload.background?.supported === true,
+      error: asText(payload.background?.error)
     };
     state.sessionId = asText(payload.sessionId);
     const validIds = new Set(state.journal.map((entry) => entry.id));
@@ -225,6 +279,9 @@
     $('connection-notice-text').textContent = `${errorText(error)}${hasState ? ' 当前显示上次读取的数据。' : ''}`;
     $('connection-notice').hidden = false;
     renderRuntime();
+    renderTodos();
+    renderCandidates();
+    renderServices();
     updateControls();
   }
 
@@ -402,6 +459,245 @@
     }
   }
 
+  function canMutate() { return hasState && !offline && !booting && Boolean(csrfToken); }
+  function validRevision(revision) { return typeof revision === 'string' && revision.length > 0 || typeof revision === 'number' && Number.isFinite(revision); }
+  function profileBusy() { return [...profileDrafts.values()].some((draft) => draft.saving || draft.awaiting); }
+  function newDraft(entry) {
+    return { text: entry?.text || '', baseline: entry?.text || '', revision: entry?.revision, dirty: false, conflict: false, saving: false, awaiting: false, editing: false };
+  }
+  function syncDraft(draft, entry) {
+    if (!draft || draft.saving && !draft.awaiting) return;
+    if (draft.dirty && !draft.awaiting) {
+      draft.conflict = !entry || entry.revision !== draft.revision;
+      return;
+    }
+    if (!entry) { draft.conflict = true; return; }
+    Object.assign(draft, { text: entry.text, baseline: entry.text, revision: entry.revision, dirty: false, conflict: false, awaiting: false });
+  }
+
+  function renderTodos() {
+    const groups = { todo: $('todo-list'), done: $('todo-done-list'), dismissed: $('todo-dismissed-list') };
+    for (const list of Object.values(groups)) list.replaceChildren();
+    const count = (status) => state.todos.filter((entry) => entry.status === status).length;
+    $('todo-count').textContent = hasState ? `${count('todo')} 件待办` : '尚未读取';
+    $('todo-done-summary').textContent = `已完成 · ${count('done')}（保留记录）`;
+    $('todo-dismissed-summary').textContent = `已忽略 · ${count('dismissed')}（保留记录）`;
+    if (!hasState) { groups.todo.append(loadingState('check')); return; }
+    if (!state.features.todos) { groups.todo.append(emptyState('宿主尚未提供 Todo', '请更新宿主后重新加载，当前不会尝试写入。', 'check')); return; }
+    for (const entry of [...state.todos].sort((a, b) => (dateValue(b.createdAt)?.getTime() || 0) - (dateValue(a.createdAt)?.getTime() || 0))) {
+      const row = element('article', `todo-row${entry.status === 'done' ? ' is-done' : ''}`);
+      const label = element('label', 'todo-label');
+      const check = element('input');
+      check.type = 'checkbox';
+      check.checked = entry.status === 'done';
+      check.dataset.todoId = entry.id;
+      check.setAttribute('aria-label', `${check.checked ? '撤销完成' : '标记完成'}：${excerpt(entry.text, 50)}`);
+      check.disabled = !canMutate() || pending.has(`todo:${entry.id}`) || entry.status === 'dismissed';
+      const content = element('span');
+      content.append(element('span', 'todo-text', entry.text), element('time', 'todo-time', dateLabel(entry.createdAt)));
+      label.append(check, content);
+      row.append(label);
+      const button = entry.status === 'dismissed'
+        ? actionButton('恢复待办', 'todo-restore', entry.id)
+        : actionButton('忽略', 'todo-dismiss', entry.id);
+      button.disabled = !canMutate() || pending.has(`todo:${entry.id}`);
+      row.append(button);
+      groups[entry.status].append(row);
+    }
+    if (!count('todo')) groups.todo.append(emptyState('先留下一件想做的事', '输入一行文字，按 Enter 添加；无需连接模型。', 'check'));
+    if (!count('done')) groups.done.append(element('p', 'field-help', '还没有已完成的事项。'));
+    if (!count('dismissed')) groups.dismissed.append(element('p', 'field-help', '还没有忽略的事项。'));
+  }
+
+  function sortedReflections() {
+    return [...state.reflections].sort((a, b) => (dateValue(b.createdAt || b.end)?.getTime() || 0) - (dateValue(a.createdAt || a.end)?.getTime() || 0));
+  }
+  function localDateKey(value) {
+    const date = dateValue(value);
+    if (!date) return '';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+  function renderTodayReflection() {
+    const target = $('today-reflection');
+    target.replaceChildren();
+    const latest = sortedReflections()[0];
+    if (!hasState) target.append(loadingState('sun'));
+    else if (!latest) target.append(emptyState('还没有每日回顾', '可在 Journal 的「每日回顾」中手动生成；自动回顾默认关闭。', 'sun'));
+    else {
+      target.append(element('p', 'field-help', `${dateLabel(latest.start)} — ${dateLabel(latest.end)}`), element('p', 'entry-text', excerpt(latest.text, 220)));
+    }
+  }
+  function renderReflections() {
+    const date = $('reflection-date').value;
+    const entries = sortedReflections().filter((entry) => !date || localDateKey(entry.end || entry.createdAt) === date);
+    if (!entries.some((entry) => entry.id === selectedReflectionId)) selectedReflectionId = entries[0]?.id || '';
+    const select = $('reflection-select');
+    select.replaceChildren();
+    if (!entries.length) select.append(element('option', '', '暂无回顾'));
+    for (const entry of entries) {
+      const option = element('option', '', `${dateLabel(entry.end || entry.createdAt, true)} · ${excerpt(entry.text.replace(/\s+/g, ' '), 35)}`);
+      option.value = entry.id;
+      select.append(option);
+    }
+    select.value = selectedReflectionId;
+    select.disabled = !entries.length;
+    const empty = $('reflection-empty');
+    empty.replaceChildren();
+    empty.hidden = Boolean(selectedReflectionId);
+    $('reflection-detail').hidden = !selectedReflectionId;
+    if (!selectedReflectionId) {
+      empty.append(!hasState ? loadingState('sun') : emptyState('这一天，尚未留下回顾', !state.features.reflections ? '宿主尚未提供回顾接口，请更新后重载。' : date ? '换一个日期，或查看全部日期。' : '生成会调用模型并收费，你可以先继续随手记录。', 'sun'));
+      return;
+    }
+    const entry = entries.find((item) => item.id === selectedReflectionId);
+    if (!reflectionDrafts.has(entry.id)) reflectionDrafts.set(entry.id, newDraft(entry));
+    const draft = reflectionDrafts.get(entry.id);
+    $('reflection-meta').textContent = `${dateLabel(entry.start, true)} — ${dateLabel(entry.end, true)} · 生成于 ${dateLabel(entry.createdAt, true)} · revision ${asId(entry.revision) || '未提供'}`;
+    $('reflection-body').textContent = entry.text;
+    $('reflection-body').hidden = draft.editing;
+    $('reflection-edit').hidden = draft.editing;
+    $('reflection-form').hidden = !draft.editing;
+    if ($('reflection-input').value !== draft.text) $('reflection-input').value = draft.text;
+    $('reflection-input').disabled = draft.saving || draft.awaiting;
+    feedback('reflection-conflict', draft.conflict ? '检测到其他地方修改了这篇回顾。草稿仍保留；请复制需要的内容，再载入最新版本合并。' : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存；请刷新版本。' : '', true);
+    $('reflection-save').disabled = !canMutate() || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || !draft.text.trim();
+    $('reflection-save').textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存回顾';
+    $('reflection-reload').disabled = !canMutate() || draft.saving;
+    $('reflection-edit').disabled = !canMutate() || !validRevision(draft.revision);
+  }
+
+  function buildProfileEditors() {
+    for (const name of profileNames) {
+      const details = element('details', 'profile-editor');
+      details.id = `profile-${name}`;
+      const summary = element('summary', '', `${name} · ${name === 'soul' ? '名字与人格' : name === 'user' ? '关于你' : '系统偏好'}`);
+      const form = element('form');
+      form.id = `profile-${name}-form`;
+      const label = element('label', 'field-label', `${name} Markdown 原文`);
+      label.htmlFor = `profile-${name}-input`;
+      const input = element('textarea', 'note-input profile-input');
+      input.id = `profile-${name}-input`;
+      input.rows = 9;
+      input.spellcheck = false;
+      input.setAttribute('aria-describedby', `profile-${name}-status`);
+      const status = element('p', 'field-help');
+      status.id = `profile-${name}-status`;
+      status.setAttribute('role', 'status');
+      const actions = element('div', 'form-actions');
+      const reload = element('button', 'secondary-button', '载入最新版本');
+      reload.id = `profile-${name}-reload`;
+      reload.type = 'button';
+      const save = element('button', 'primary-button', '保存文件');
+      save.id = `profile-${name}-save`;
+      save.type = 'submit';
+      const message = element('p', 'form-feedback');
+      message.id = `profile-${name}-feedback`;
+      message.setAttribute('role', 'status');
+      message.hidden = true;
+      actions.append(reload, save);
+      form.append(label, input, status, actions, message);
+      details.append(summary, form);
+      $('profile-editors').append(details);
+      input.addEventListener('input', () => {
+        const draft = profileDrafts.get(name);
+        if (!draft) return;
+        draft.text = input.value;
+        draft.dirty = draft.text !== draft.baseline;
+        feedback(message.id);
+        renderProfiles();
+        updateControls();
+      });
+      form.addEventListener('submit', (event) => { event.preventDefault(); void saveRevision('profile', name); });
+      reload.addEventListener('click', () => void reloadRevision('profile', name));
+    }
+  }
+  function renderProfiles() {
+    for (const name of profileNames) {
+      const source = state.profiles[name];
+      if (!profileDrafts.has(name) && source) profileDrafts.set(name, newDraft(source));
+      const draft = profileDrafts.get(name);
+      const input = $(`profile-${name}-input`);
+      if (!draft) {
+        input.disabled = true;
+        $(`profile-${name}-status`).textContent = hasState ? '宿主尚未提供此文件，不能安全编辑。' : '正在读取本地文件…';
+        $(`profile-${name}-save`).disabled = true;
+        $(`profile-${name}-reload`).disabled = !canMutate();
+        continue;
+      }
+      if (input.value !== draft.text) input.value = draft.text;
+      input.disabled = !source || draft.saving || draft.awaiting || settingsSaving;
+      const status = $(`profile-${name}-status`);
+      status.textContent = draft.conflict ? '版本已变化或文件已移除；草稿仍保留。复制需要的内容后载入最新版合并，不会强制覆盖。'
+        : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存。'
+          : `revision ${draft.revision} · ${draft.awaiting ? '保存成功，等待同步' : draft.dirty ? '有未保存草稿' : '与已读取版本一致'}`;
+      status.classList.toggle('is-error', draft.conflict);
+      $(`profile-${name}-save`).disabled = !canMutate() || !source || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || Boolean(activeRun) || settingsSaving || resetting;
+      $(`profile-${name}-save`).textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存文件';
+      $(`profile-${name}-reload`).disabled = !canMutate() || draft.saving;
+    }
+  }
+
+  function renderCandidates() {
+    $('memory-suggestions-status').textContent = !hasState ? '正在读取记忆候选状态' : state.settings.memorySuggestionsEnabled ? '记忆候选已启用 · 仍需逐条人工接受' : '记忆候选已关闭 · 已有候选仍需人工确认';
+    const entries = state.memoryCandidates.filter((entry) => !['accepted', 'rejected', 'dismissed'].includes(entry.status));
+    $('memory-candidate-count').textContent = `${entries.length} 条待查看`;
+    const list = $('memory-candidate-list');
+    list.replaceChildren();
+    if (!hasState) { list.append(loadingState('memory')); return; }
+    if (!entries.length) { list.append(emptyState('没有待确认候选', '候选不会自动成为记忆；也可以在下方手动添加。', 'memory')); return; }
+    for (const entry of entries) {
+      const card = element('div', 'candidate-entry');
+      const actions = element('div', 'form-actions');
+      const ready = ['', 'pending', 'candidate', 'proposed'].includes(entry.status);
+      for (const [label, action] of [['忽略', 'candidate-reject'], ['接受为记忆', 'candidate-accept']]) {
+        const button = actionButton(label, action, entry.id, action === 'candidate-accept' ? 'secondary-button' : 'text-button');
+        button.disabled = !canMutate() || !ready || pending.has(`candidate:${entry.id}`);
+        actions.append(button);
+      }
+      card.append(element('p', 'entry-text', entry.text), element('p', 'field-help', `来源：${entry.source || '未提供'}${ready ? '' : ` · 状态：${entry.status}`}`), actions);
+      list.append(card);
+    }
+  }
+
+  function taskStatus(task) {
+    if (!task || typeof task !== 'object') return '宿主未提供状态';
+    const pieces = [task.running === true ? '执行中' : asText(task.status) || '当前未执行'];
+    const error = asText(task.error) || asText(task.lastError);
+    if (error) pieces.push(`错误：${error}`);
+    if (dateValue(task.lastRunAt)) pieces.push(`最近：${dateLabel(task.lastRunAt)}`);
+    if (dateValue(task.nextRunAt)) pieces.push(`下次：${dateLabel(task.nextRunAt)}`);
+    return pieces.join(' · ');
+  }
+  function duration(seconds) {
+    const value = Math.max(0, Math.round(seconds || 0));
+    return value < 60 ? `${value} 秒` : `${Math.floor(value / 3600) ? `${Math.floor(value / 3600)} 小时 ` : ''}${Math.floor(value % 3600 / 60)} 分钟`;
+  }
+  function renderServices() {
+    $('data-directory').textContent = state.dataDirectory || (hasState ? '宿主未提供数据路径' : '尚未读取');
+    $('host-open-hint').textContent = state.hostUrl ? '由本机服务打开实际宿主已认证地址；进入后使用宿主模型齿轮或连接器配置，不在此构造深链。' : '宿主未提供可展示地址；可点击尝试由本机服务打开。若失败，请使用你启动 Harness 时获得的原始地址。';
+    $('background-state').textContent = !hasState ? '尚未读取' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.enabled ? '已启用' : '未启用';
+    $('background-toggle').textContent = pending.has('background') ? '正在处理…' : state.background.enabled ? '停用后台服务…' : '启用后台服务…';
+    feedback('background-error', state.background.error, true);
+    $('reflection-status').textContent = `${state.settings.reflectionEnabled ? '自动回顾已开启 · 本地 05:00' : '自动回顾未开启'} · ${taskStatus(state.maintenance.reflection)}`;
+    $('maintenance-status').textContent = `${state.maintenance.running === true ? '宿主调度运行中' : '宿主调度未报告运行'}\n回顾：${taskStatus(state.maintenance.reflection)}\n更新：${taskStatus(state.maintenance.update)}\n记忆候选：${taskStatus(state.maintenance.memory)}`;
+    const activity = state.activity;
+    $('activity-badge').textContent = !hasState ? '尚未读取' : typeof activity.enabled !== 'boolean' ? '宿主未提供' : activity.enabled ? '已开启' : '已关闭';
+    $('activity-enabled-state').textContent = typeof activity.enabled !== 'boolean' ? '未报告' : activity.enabled ? '开' : '关';
+    $('activity-running-state').textContent = offline ? '无法获取最新状态' : typeof activity.running !== 'boolean' ? '未报告' : activity.running ? '正在采集' : '未在采集';
+    $('activity-source').textContent = asText(activity.source) || '宿主未提供';
+    $('activity-total').textContent = hasState ? duration(state.activitySummary.seconds) : '—';
+    feedback('activity-error', asText(activity.error), true);
+    const apps = $('activity-apps');
+    apps.replaceChildren();
+    for (const app of state.activitySummary.apps) {
+      const row = element('div', 'capability-line');
+      row.append(element('span', '', app.name), element('span', '', duration(app.seconds)));
+      apps.append(row);
+    }
+    if (!state.activitySummary.apps.length) apps.append(element('p', 'field-help', '暂无应用时长汇总；不会填入示例。'));
+    else apps.append(element('p', 'field-help', '以上为宿主返回的已记录汇总，不代表当前正在采集。'));
+  }
+
   function renderRuntime() {
     const runtime = state.runtime;
     const verification = !hasState ? '尚未读取' : offline ? '无法获取最新状态'
@@ -443,8 +739,8 @@
       ? '正在读取宿主配置。模型设置由 Harness 管理，打开或保存此设置不会连接模型或发送消息。'
       : offline ? '暂时无法读取最新宿主配置；请重新加载。'
         : runtime.configured === true
-          ? '已继承 Harness 的有效模型路由，不代表网络或凭据已经验证。更换模型请回 Harness 的模型设置；这里保存名字与隐私选项不会调用模型。'
-          : '宿主尚未配置有效模型路由，请回 Harness 的模型设置处理。仍可单独保存名字与隐私选项，无需复制 Key。';
+          ? '已继承 Harness 的有效模型路由，不代表网络或凭据已经验证。更换模型请回宿主设置；保存名字本身不调用模型，但开启自动功能后宿主可能按计划调用并收费。'
+          : '宿主尚未配置有效模型路由，请回 Harness 的模型设置处理。仍可保存名字与偏好，无需复制 Key；自动生成内容需要可用的模型路由。';
     $('welcome-connection').textContent = !hasState || offline
       ? '读取本机状态后再开始对话；不会自动连接模型或发送消息。无需在此复制 Key。'
       : runtime.configured === true
@@ -522,6 +818,12 @@
     renderToday();
     renderJournal();
     renderMemories();
+    renderTodos();
+    renderCandidates();
+    renderTodayReflection();
+    renderProfiles();
+    renderReflections();
+    renderServices();
     renderRuntime();
     renderChat();
     renderAttachments();
@@ -548,7 +850,32 @@
     for (const id of ['journal-input', 'journal-time']) $(id).disabled = journalSaving;
     for (const id of ['memory-input', 'memory-confirm']) $(id).disabled = memorySaving;
     for (const id of ['assistant-name-input', 'allow-context']) $(id).disabled = !usable || settingsSaving || busy || resetting;
+    const profileSaving = profileBusy();
+    const configurationBusy = settingsSaving || busy || resetting || profileSaving;
+    $('send-button').disabled ||= profileSaving;
+    $('settings-save').disabled ||= profileSaving;
+    $('reset-session').disabled ||= profileSaving;
+    for (const id of ['assistant-name-input', ...Object.values(settingFields)]) {
+      $(id).disabled = !usable || configurationBusy || (id !== 'assistant-name-input' && id !== 'allow-context' && !state.features.automation);
+    }
+    $('todo-add').disabled = !usable || !state.features.todos || pending.has('todo-add') || !$('todo-input').value.trim() || todoComposing;
+    $('todo-add').textContent = pending.has('todo-add') ? '添加中…' : '添加';
+    $('todo-input').disabled = pending.has('todo-add');
+    $('reflection-run').disabled = !usable || !state.features.reflections || state.runtime.configured !== true || busy || settingsSaving || pending.has('reflection-run') || state.maintenance.reflection?.running === true;
+    $('reflection-run').textContent = pending.has('reflection-run') || state.maintenance.reflection?.running === true ? '正在生成…' : '生成一次回顾';
+    const reflectionSaving = [...reflectionDrafts.values()].some((draft) => draft.saving);
+    $('reflection-date').disabled = reflectionSaving;
+    $('reflection-date-clear').disabled = reflectionSaving;
+    $('reflection-select').disabled = reflectionSaving || !selectedReflectionId;
+    for (const [id, key] of [['open-harness', 'open-harness'], ['open-folder', 'open-folder']]) $(id).disabled = !usable || pending.has(key);
+    $('open-folder').disabled ||= !state.dataDirectory;
+    $('background-toggle').disabled = !usable || !state.background.supported || pending.has('background') || configurationBusy;
+    $('profiles-refresh').disabled = booting || busy || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving);
+    $('reflections-refresh').disabled = booting || busy || reflectionSaving || pending.has('reflection-run');
     $('retry-load').disabled = booting || busy;
+    renderProfiles();
+    renderReflections();
+    $('reflection-select').disabled ||= reflectionSaving;
   }
 
   function switchTab(name, focus = false) {
@@ -589,8 +916,8 @@
 
   function openSettings() {
     if ($('settings-dialog').open) return;
-    $('assistant-name-input').value = displayName();
-    $('allow-context').checked = state.settings.allowContext;
+    syncSettingsName();
+    for (const [field, id] of Object.entries(settingFields)) $(id).checked = state.settings[field];
     feedback('settings-feedback', activeRun ? (name) => `正在与 ${name} 对话，请停止或等待结束后再修改设置。` : '');
     renderRuntime();
     updateControls();
@@ -713,32 +1040,45 @@
 
   async function saveSettings(event) {
     event.preventDefault();
-    if (settingsSaving || activeRun || resetting || !hasState || offline || booting || !csrfToken) return;
+    if (settingsSaving || activeRun || resetting || profileBusy() || !hasState || offline || booting || !csrfToken) return;
     const rawName = $('assistant-name-input').value;
     const assistantName = rawName.trim() || defaultAssistantName;
     if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(rawName) || assistantName.length > 40) {
       feedback('settings-feedback', '名字需为 1–40 字符，不能包含控制字符或换行；留空可恢复默认名字。', true);
       return;
     }
+    const nameChanged = assistantName !== settingsNameBaseline;
+    if (nameChanged && (profileDrafts.get('soul')?.dirty || settingsNameRevision !== state.profiles.soul?.revision)) {
+      feedback('settings-feedback', 'soul 有未保存草稿或版本已变化。请先处理 soul 草稿；若版本已变化，重新打开设置读取最新名字后再改名。其他设置尚未保存。', true);
+      return;
+    }
+    const body = {};
+    if (nameChanged) body.assistantName = assistantName;
+    for (const [field, id] of Object.entries(settingFields)) {
+      if (field === 'allowContext' || state.features.automation) body[field] = $(id).checked;
+    }
+    const warnings = [];
+    if (body.activityEnabled && !state.settings.activityEnabled) warnings.push('记录应用名称与前台时长，不采集应用内容。');
+    if (body.reflectionEnabled && !state.settings.reflectionEnabled) warnings.push('每天本地 05:00 将过去 24 小时的 Journal / Todo / 可选时长交给模型生成回顾，会产生费用。');
+    if (body.autoUpdateEnabled && !state.settings.autoUpdateEnabled) warnings.push('每天本地 06:00 自动安装稳定版，可能重启宿主；已有数据应受保护。');
+    if (body.memorySuggestionsEnabled && !state.settings.memorySuggestionsEnabled) warnings.push('模型可生成记忆候选并产生费用，但仍需你逐条人工接受。');
     settingsSaving = true;
     updateControls();
     feedback('settings-feedback');
     let saved = false;
     try {
-      // 只提交插件偏好；由后端验证并持久化，不改动宿主模型或会话数据。
-      await api('/api/settings', {
-        method: 'POST',
-        body: { assistantName, allowContext: $('allow-context').checked }
-      });
+      if (warnings.length && !await confirmAction('确认开启所选功能？', `${warnings.join('\n\n')}\n\n关闭浏览器不等于停止宿主。退出宿主后不能保证执行；这里不会安装或启用后台服务。`, '确认开启并保存', '返回检查')) return;
+      // 改名走设置接口写入 soul；未改名时不提交旧名字，避免覆盖文件中的新名字。
+      await api('/api/settings', { method: 'POST', body });
       saved = true;
       const refreshed = await refreshState();
       if (!refreshed) {
         feedback('settings-feedback', '设置已保存，正在同步最新状态；如名字未更新，请重新加载查看。');
         return;
       }
-      $('assistant-name-input').value = displayName();
-      $('allow-context').checked = state.settings.allowContext;
-      feedback('settings-feedback', (name) => `${name} 的设置已保存。对话、Journal 与记忆均保留，没有连接模型或发送消息。`);
+      syncSettingsName();
+      for (const [field, id] of Object.entries(settingFields)) $(id).checked = state.settings[field];
+      feedback('settings-feedback', (name) => `${name} 的设置已保存，soul 已重新读取。对话与本地记录均保留；开启的自动功能将在宿主运行时执行，模型调用可能收费。`);
       notify((name) => `已保存 ${name} 的设置。`);
     } catch (error) {
       feedback('settings-feedback', saved ? '设置已保存，但状态刷新失败。请重新加载查看，不必重复保存。' : errorText(error), true);
@@ -749,7 +1089,7 @@
   }
 
   async function resetSession() {
-    if (activeRun || resetting || settingsSaving || !hasState || offline) return;
+    if (activeRun || resetting || settingsSaving || profileBusy() || !hasState || offline) return;
     const approved = await confirmAction('重新开始这段对话？', '将创建新的模型会话，并清空当前聊天视图。Journal、手动记忆和已有本地日志会保留。\n\n这不会撤回此前已经发送给模型的内容。', '确认重置', '继续当前对话');
     if (!approved) return;
     resetting = true;
@@ -772,6 +1112,165 @@
       resetting = false;
       updateControls();
     }
+  }
+
+  async function mutate(key, path, body, feedbackId, success, options = {}) {
+    if (!canMutate() || pending.has(key)) return false;
+    pending.add(key);
+    updateControls();
+    renderTodos();
+    renderCandidates();
+    renderServices();
+    let saved = false;
+    try {
+      if (options.confirm && !await confirmAction(...options.confirm)) return false;
+      feedback(feedbackId);
+      await api(path, { method: 'POST', body, timeout: options.timeout });
+      saved = true;
+      options.afterSaved?.();
+      if (options.refresh !== false) await refreshState();
+      feedback(feedbackId, success);
+      return true;
+    } catch (error) {
+      feedback(feedbackId, saved ? '操作已完成，但最新状态读取失败。请刷新，不要重复提交。' : errorText(error), true);
+      if (!saved && key.startsWith('todo:') && [409, 412].includes(error.status)) {
+        try { await refreshState(); } catch { /* 连接错误由 refreshState 展示，保留冲突提示。 */ }
+      }
+      return false;
+    } finally {
+      pending.delete(key);
+      renderTodos();
+      renderCandidates();
+      renderServices();
+      updateControls();
+    }
+  }
+
+  function saveTodo(event) {
+    event.preventDefault();
+    if (todoComposing || performance.now() - todoCompositionEndedAt < 80) return;
+    const text = $('todo-input').value.trim();
+    if (!text || !state.features.todos) return;
+    void mutate('todo-add', '/api/todos', { text }, 'todo-feedback', '已添加到本地 Todo。', {
+      afterSaved: () => { $('todo-input').value = ''; }
+    });
+  }
+  function changeTodo(id, status) {
+    const entry = state.todos.find((item) => item.id === id);
+    if (!entry) return;
+    if (!validRevision(entry.revision)) { feedback('todo-feedback', '宿主未提供 revision，请重新加载后再修改待办。', true); return; }
+    void mutate(`todo:${id}`, `/api/todos/${encodeURIComponent(id)}`, { status, revision: entry.revision }, 'todo-feedback', status === 'done' ? '已完成并折叠保留，可取消勾选恢复。' : status === 'dismissed' ? '已单独忽略并保留，不计为完成。' : '已恢复为待办。');
+  }
+  function decideCandidate(id, accept) {
+    const entry = state.memoryCandidates.find((item) => item.id === id);
+    if (!entry || !['', 'pending', 'candidate', 'proposed'].includes(entry.status)) return;
+    void mutate(`candidate:${id}`, `/api/memory-candidates/${encodeURIComponent(id)}`, { accept }, 'memory-candidate-feedback', accept ? '已由你确认接受为长期记忆。' : '已忽略这条候选，未接受为记忆。');
+  }
+  function runReflection() {
+    if (!state.features.reflections || state.runtime.configured !== true || activeRun || state.maintenance.reflection?.running === true) return;
+    void mutate('reflection-run', '/api/reflections/run', {}, 'reflection-run-feedback', '生成请求已完成；回顾与任务状态已刷新。如果宿主仍在执行，请稍后刷新查看。', {
+      timeout: 180000,
+      confirm: ['生成过去 24 小时的回顾？', '将把过去 24 小时的 Journal、Todo，以及已开启采集时可用的应用时长发送给 Harness 配置的模型服务。模型会产生费用。\n\n这次手动生成不会开启每日自动回顾。', '确认生成并付费', '暂不生成']
+    });
+  }
+  function toggleBackground() {
+    if (!state.background.supported) return;
+    const enabled = !state.background.enabled;
+    void mutate('background', '/api/background', { enabled }, 'background-feedback', enabled ? '启用请求已完成，以上方宿主返回的后台状态为准。' : '停用请求已完成，以上方宿主返回的后台状态为准。', {
+      timeout: 120000,
+      confirm: enabled
+        ? ['安装并启用 macOS 后台服务？', '这会在系统中安装并启用 LaunchAgent，让 Harness 可在关闭浏览器后继续运行。已经开启的回顾可能调用付费模型，自动更新可能重启宿主。\n\n不会自动替你开启四个功能开关；关机或休眠期间不保证定时执行。仅在你确认后安装。', '确认安装并启用', '暂不启用']
+        : ['停用后台服务？', '这会停用系统 LaunchAgent，可能中断当前宿主连接。定时任务需要宿主保持运行，停用后不能保证执行。已有记录会保留。', '确认停用', '保持启用']
+    });
+  }
+  function openHost() {
+    void mutate('open-harness', '/api/open-harness', {}, 'host-open-feedback', '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
+  }
+
+  async function saveRevision(kind, id) {
+    const isProfile = kind === 'profile';
+    const draft = (isProfile ? profileDrafts : reflectionDrafts).get(id);
+    const feedbackId = isProfile ? `profile-${id}-feedback` : 'reflection-feedback';
+    if (!canMutate() || !draft || draft.saving || draft.awaiting || draft.conflict || !draft.dirty || !validRevision(draft.revision)) return;
+    if (isProfile && (activeRun || settingsSaving || resetting)) return;
+    if (!isProfile && !draft.text.trim()) return;
+    draft.saving = true;
+    updateControls();
+    renderProfiles();
+    renderReflections();
+    feedback(feedbackId);
+    let saved = false;
+    try {
+      const path = isProfile ? `/api/profiles/${id}` : `/api/reflections/${encodeURIComponent(id)}`;
+      await api(path, { method: 'POST', body: { text: draft.text, revision: draft.revision } });
+      saved = true;
+      draft.awaiting = true;
+      await refreshState();
+      if (isProfile && id === 'soul' && $('assistant-name-input').value === settingsNameBaseline) syncSettingsName();
+      feedback(feedbackId, '已保存，并重新读取本地版本；没有调用模型。');
+    } catch (error) {
+      if (!saved && (error.status === 409 || error.status === 412)) {
+        draft.conflict = true;
+        try { await refreshState(); } catch { /* 保留草稿及原 revision，不自动重试保存。 */ }
+      }
+      feedback(feedbackId, saved ? '文件已保存，但新 revision 尚未同步。草稿已保留，请刷新版本，不要重复保存。' : `${errorText(error)} 草稿已保留。`, true);
+    } finally {
+      draft.saving = false;
+      renderProfiles();
+      renderReflections();
+      updateControls();
+    }
+  }
+  async function reloadRevision(kind, id) {
+    const isProfile = kind === 'profile';
+    const drafts = isProfile ? profileDrafts : reflectionDrafts;
+    const draft = drafts.get(id);
+    const feedbackId = isProfile ? `profile-${id}-feedback` : 'reflection-feedback';
+    if (draft?.saving) return;
+    if (draft?.dirty && !draft.awaiting && !await confirmAction('用最新版本替换草稿？', '只替换这个编辑框的未保存草稿，不改动服务器文件。请先复制仍需保留的内容。', '载入最新版本', '保留草稿')) return;
+    try {
+      const refreshed = await refreshState();
+      if (!refreshed) throw new Error('仍在同步状态，请稍后再载入最新版本。');
+      const entry = isProfile ? state.profiles[id] : state.reflections.find((item) => item.id === id);
+      if (!entry) throw new Error('宿主没有返回此文件；草稿未清除。');
+      const next = newDraft(entry);
+      next.editing = draft?.editing || false;
+      drafts.set(id, next);
+      feedback(feedbackId, '已载入最新版本，可以在此基础上编辑保存。');
+      renderProfiles();
+      renderReflections();
+      updateControls();
+    } catch (error) { feedback(feedbackId, errorText(error), true); }
+  }
+  function syncSettingsName() {
+    settingsNameBaseline = displayName();
+    settingsNameRevision = state.profiles.soul?.revision;
+    $('assistant-name-input').value = displayName();
+  }
+  function switchJournalView(name, focus = false) {
+    if (!['notes', 'reflections'].includes(name)) return;
+    journalView = name;
+    for (const view of ['notes', 'reflections']) {
+      const tab = $(`journal-tab-${view}`);
+      const selected = name === view;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      $(`journal-${view}`).hidden = !selected;
+    }
+    if (focus) $(`journal-tab-${name}`).focus();
+    if (name === 'reflections') renderReflections();
+  }
+  async function refreshStatus(manual = false, feedbackId = 'profiles-feedback') {
+    if (statusRefreshing || booting || activeRun || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving) || pending.size || [...reflectionDrafts.values()].some((draft) => draft.saving)) return;
+    if (!manual && (document.hidden || !hasState || offline)) return;
+    statusRefreshing = true;
+    try {
+      if (!csrfToken) await bootstrap();
+      else await refreshState();
+      if (manual && !offline) feedback(feedbackId, '已刷新最新状态；未保存草稿保持不变。');
+    } catch (error) { if (manual) feedback(feedbackId, errorText(error), true); }
+    finally { statusRefreshing = false; }
   }
 
   function ensureAssistant(run) {
@@ -870,7 +1369,7 @@
 
   async function sendChat(event) {
     event.preventDefault();
-    if (activeRun || resetting || settingsSaving) return;
+    if (activeRun || resetting || settingsSaving || profileBusy()) return;
     if (!hasState || offline || !csrfToken) { feedback('chat-feedback', '请先连接本机服务，读取状态后再发送。', true); return; }
     const text = $('chat-input').value.trim();
     if (!text) return;
@@ -986,6 +1485,10 @@
     else if (target.dataset.action === 'detach') { attachments.delete(id); renderAttachments(); }
     else if (target.dataset.action === 'delete-journal') void deleteEntry('journal', id);
     else if (target.dataset.action === 'delete-memory') void deleteEntry('memories', id);
+    else if (target.dataset.action === 'todo-dismiss') changeTodo(id, 'dismissed');
+    else if (target.dataset.action === 'todo-restore') changeTodo(id, 'todo');
+    else if (target.dataset.action === 'candidate-accept') decideCandidate(id, true);
+    else if (target.dataset.action === 'candidate-reject') decideCandidate(id, false);
   });
 
   $('runtime-button').addEventListener('click', () => switchTab('capabilities'));
@@ -1017,9 +1520,81 @@
   });
   $('cancel-button').addEventListener('click', cancelChat);
   $('retry-load').addEventListener('click', bootstrap);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) renderToday(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { renderToday(); void refreshStatus(); } });
   window.addEventListener('resize', resizeComposer);
 
+  $('todo-form').addEventListener('submit', saveTodo);
+  $('todo-input').addEventListener('input', updateControls);
+  $('todo-input').addEventListener('compositionstart', () => { todoComposing = true; updateControls(); });
+  $('todo-input').addEventListener('compositionend', () => { todoComposing = false; todoCompositionEndedAt = performance.now(); updateControls(); });
+  $('todo-input').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    if (event.isComposing || todoComposing || event.keyCode === 229 || performance.now() - todoCompositionEndedAt < 80) {
+      todoCompositionEndedAt = performance.now();
+      return;
+    }
+    event.preventDefault();
+    $('todo-form').requestSubmit();
+  });
+  document.addEventListener('change', (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.dataset.todoId && !target.disabled) changeTodo(target.dataset.todoId, target.checked ? 'done' : 'todo');
+  });
+  document.querySelectorAll('[data-journal-view]').forEach((tab) => {
+    tab.addEventListener('click', () => switchJournalView(tab.dataset.journalView));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (['ArrowLeft', 'ArrowRight'].includes(event.key)) next = journalView === 'notes' ? 'reflections' : 'notes';
+      else if (event.key === 'Home') next = 'notes';
+      else if (event.key === 'End') next = 'reflections';
+      if (next) { event.preventDefault(); switchJournalView(next, true); }
+    });
+  });
+  $('today-reflection-open').addEventListener('click', () => {
+    $('reflection-date').value = '';
+    selectedReflectionId = sortedReflections()[0]?.id || '';
+    feedback('reflection-feedback');
+    switchTab('journal');
+    switchJournalView('reflections');
+  });
+  $('reflection-date').addEventListener('change', () => { feedback('reflection-feedback'); renderReflections(); });
+  $('reflection-date-clear').addEventListener('click', () => { $('reflection-date').value = ''; renderReflections(); });
+  $('reflection-select').addEventListener('change', () => {
+    selectedReflectionId = $('reflection-select').value;
+    feedback('reflection-feedback');
+    renderReflections();
+  });
+  $('reflection-edit').addEventListener('click', () => {
+    const draft = reflectionDrafts.get(selectedReflectionId);
+    if (!draft) return;
+    draft.editing = true;
+    renderReflections();
+    $('reflection-input').focus();
+  });
+  $('reflection-input').addEventListener('input', () => {
+    const draft = reflectionDrafts.get(selectedReflectionId);
+    if (!draft) return;
+    draft.text = $('reflection-input').value;
+    draft.dirty = draft.text !== draft.baseline;
+    feedback('reflection-feedback');
+    renderReflections();
+  });
+  $('reflection-form').addEventListener('submit', (event) => { event.preventDefault(); void saveRevision('reflection', selectedReflectionId); });
+  $('reflection-reload').addEventListener('click', () => void reloadRevision('reflection', selectedReflectionId));
+  $('reflection-run').addEventListener('click', runReflection);
+  $('reflections-refresh').addEventListener('click', () => void refreshStatus(true, 'reflection-run-feedback'));
+  $('profiles-refresh').addEventListener('click', () => void refreshStatus(true));
+  $('open-folder').addEventListener('click', () => void mutate('open-folder', '/api/open-folder', {}, 'folder-feedback', '已请求本机打开数据文件夹。', { refresh: false }));
+  $('open-harness').addEventListener('click', openHost);
+  $('background-toggle').addEventListener('click', toggleBackground);
+  window.addEventListener('beforeunload', (event) => {
+    if (![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.dirty || draft.saving || draft.awaiting)) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+  // 仅刷新状态；定时任务和后台安装绝不由页面自动触发。
+  window.setInterval(() => void refreshStatus(), 30000);
+  buildProfileEditors();
   renderAll();
   void bootstrap();
 })();
