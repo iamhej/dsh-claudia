@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-claudia
+      name: dsh-claudia
+      inject: [dshHomePath, appReady, webStartup]
+      config:
+        port: 4317
+        openBrowser: true

@@ -1,0 +1,26 @@
+{
+  "name": "dsh-claudia",
+  "version": "0.2.1",
+  "description": "A personal, two-pane companion UI and Journal plugin for DeepSeek Harness",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/iamhej/dsh-claudia.git" },
+  "homepage": "https://github.com/iamhej/dsh-claudia#readme",
+  "bugs": { "url": "https://github.com/iamhej/dsh-claudia/issues" },
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": { ".": "./index.mjs" },
+  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "files": ["index.mjs", "native-runtime.mjs", "server.mjs", "store.mjs", "cordis.patch.yml", "public/", "README.md", "LICENSE"],
+  "keywords": ["dsh-plugin", "deepseek-harness", "journal", "personal-assistant"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-agent": "~0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "~0.1.5-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "~0.1.5-rc.1"
+  },
+  "scripts": {
+    "test": "node --test tests/store.test.mjs tests/native-api.test.mjs",
+    "test:host": "node tests/native-host.mjs",
+    "pack:check": "npm pack --dry-run"
+  }
+}
