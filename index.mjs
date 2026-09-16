@@ -6,6 +6,9 @@ import { NativeRuntime } from './native-runtime.mjs';
 import { ActivityTracker } from './activity.mjs';
 import { Maintenance } from './maintenance.mjs';
 import { BackgroundService, createInstaller } from './lifecycle.mjs';
+import { RestartControl } from './restart.mjs';
+import { readFileSync } from 'node:fs';
+const runningVersion=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version;
 const exec=promisify(execFile);
 export const name='dsh-claudia';
 export const inject=['dshHomePath','appReady','webStartup','webServer','connection','agents','llm','systemPrompt','tools','agentDefaultModel'];
@@ -23,12 +26,13 @@ export async function apply(ctx,config={}) {
   const profile=config.profile??'web';
   const hostUrl=()=>`http://127.0.0.1:${ctx.webServer.port}`;
   const app=await startServer({dataDir,port,home,profile,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values()].map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
-    createServices:({store,runtime,isBusy,pluginPort})=>{
+    createServices:({store,runtime,isBusy,restartBusy,pluginPort})=>{
       const options={dataDir,home,profile,dshBin:config.dshBin??process.argv[1],nodeBin:config.nodeBin??process.execPath,hostPort:ctx.webServer.port,pluginPort,pnpmPath:config.pnpmPath};
       const activity=new ActivityTracker(dataDir);
       const maintenance=new Maintenance({store,runtime,activity,isBusy,installUpdate:createInstaller(options)});
       const background=new BackgroundService(options);
-      return {activity,maintenance,background};
+      const restart=new RestartControl({...options,runningVersion,isBusy:restartBusy});
+      return {activity,maintenance,background,restart};
     }});
   let privacyTimer=null,privacySync=false;
   const syncPrivacy=async()=>{

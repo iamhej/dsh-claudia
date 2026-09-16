@@ -7,6 +7,10 @@ import { resolve, dirname, basename, join, parse } from 'node:path';
 
 export const MAX_RECORD_BYTES = 8 * 1024 * 1024;
 export const MAX_PROFILE_CHARS = 12000;
+export const PROFILE_DEFAULTS = Object.freeze({
+  soul: '温暖地回应，也坦诚地表达判断。认真听懂对方，但不一味附和；有不同看法时，说明理由，把选择留给对方。\n\n少说教，不替人下定义，不急着把每个情绪变成建议。需要建议时，给出具体、可行的一两步。\n\n只依据已知信息回答。不编造事实、经历、记忆或已经完成的操作；不知道就说明，不确定就区分事实与推测。',
+  system: '默认用中文，表达简洁自然，少套话。先回答用户当前的问题，再按需要补充理由或步骤；信息不足时只问必要的问题。\n\n区分事实、推测与建议，不编造来源或执行结果。不把历史记录里的每句话都当作当前请求。\n\nJournal 用于保存随手记录，不需要逐条回复。只有用户主动请求讨论、整理或回顾时，才围绕所选内容回应；不要擅自改写记录或用户信息。',
+});
 const LOCK_FORMAT = 'dsh-claudia-records-lock-v1';
 const activeLocks = new Map();
 export const BOOLEAN_SETTINGS = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
@@ -65,7 +69,61 @@ function nameInSoul(text) {
   return validateAssistantName(field.value);
 }
 function document(kind, metadata, text) {
-  return `---\n${Object.entries(metadata).map(([key, value]) => `${key}: ${json(value)}`).join('\n')}\n---\n${header(kind)}${requireText(text)}`;
+  return `---\n${Object.entries(metadata).map(([key, value]) => `${key}: ${json(value)}`).join('\n')}\n---\n${kind === 'soul' ? '' : header(kind)}${requireText(text)}`;
+}
+function stripProfileHeader(name, text) {
+  // 只识别开头完整的旧机器说明行，不吞掉用户注释或其他空白。
+  const line = header(name).slice(0, -1);
+  if (!text.startsWith(line)) return text;
+  const newline = /^(?:\r?\n|$)/.exec(text.slice(line.length));
+  return newline ? text.slice(line.length + newline[0].length) : text;
+}
+function profilePrefix(name, text) {
+  if (name === 'soul') return text.slice(0, frontmatter(text).end);
+  return text.startsWith('\uFEFF') ? '\uFEFF' : '';
+}
+function profileBody(name, text) {
+  return text ? stripProfileHeader(name, text.slice(profilePrefix(name, text).length)) : '';
+}
+function withProfileBody(name, current, body) {
+  let prefix = current === null && name === 'soul' ? document('soul', { assistantName: 'Claudia' }, '') : profilePrefix(name, current ?? '');
+  // 外部文件可在 frontmatter 结束边界处直接 EOF；仅在追加正文时补换行。
+  if (name === 'soul' && !prefix.endsWith('\n') && body) prefix += prefix.includes('\r\n') ? '\r\n' : '\n';
+  return prefix + body;
+}
+function withFields(text, values) {
+  const meta = frontmatter(text), edits = [];
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  let missing = '';
+  for (const [key, value] of Object.entries(values)) {
+    const field = meta.values.get(key), line = `${key}: ${json(value)}`;
+    if (field) edits.push({ start: field.start, end: field.end, text: line });
+    else missing += line + newline;
+  }
+  if (missing) edits.push({ start: meta.insert, end: meta.insert, text: missing });
+  for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  return text;
+}
+function booleanSettings(text) {
+  if (text === null) return {};
+  const values = {};
+  for (const [key, field] of frontmatter(text).values) {
+    if (!BOOLEAN_SETTINGS.includes(key)) throw fail('settings.md 只允许非敏感行为配置');
+    if (!['true', 'false'].includes(field.raw)) throw fail('settings.md 行为配置只能是 true 或 false');
+    values[key] = field.raw === 'true';
+  }
+  return values;
+}
+function batchObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) throw fail('批量设置包含未知字段或无效对象，不接受密钥、端点或路径');
+}
+function batchRevision(value) {
+  if (value !== null && (typeof value !== 'string' || !DIGEST.test(value))) throw fail('revision 必须是完整文件摘要或 null');
+}
+function batchWriteError(error) {
+  if (error.status === 409) return '写入期间 Markdown 已变化，已停止后续写入，请重新读取后重试';
+  const reason = { EACCES: '没有文件写入权限', EPERM: '没有文件写入权限', ENOSPC: '磁盘空间不足', EIO: '磁盘读写失败', EROFS: '文件系统只读' }[error.code];
+  return `${reason || '本机文件保存失败'}，已停止后续写入；请重新读取并检查本机文件状态`;
 }
 function bodyOffset(kind, text, meta) {
   let offset = meta.end;
@@ -370,8 +428,8 @@ export class Records {
       else for (const entry of memories) create(`migration/${hash('memory:' + entry.id)}.md`, document('memory', entryWithoutText(entry), entry.text), false);
       create('todo.md', collectionHeader('todo'), false);
       create('soul.md', document('soul', { assistantName: validateAssistantName(settings.assistantName ?? 'Claudia') }, ''), settings.assistantName !== undefined);
-      create('user.md', header('user'), false);
-      create('system.md', header('system'), false);
+      create('user.md', '', false);
+      create('system.md', '', false);
       const bools = Object.fromEntries(BOOLEAN_SETTINGS.map(key => [key, typeof settings[key] === 'boolean' ? settings[key] : false]));
       create('settings.md', document('settings', bools, '<!-- 只接受上述非敏感 bool 配置，不得在此保存密钥。 -->\n'), BOOLEAN_SETTINGS.some(key => settings[key] !== undefined));
       const sessions = new Map();
@@ -467,7 +525,7 @@ export class Records {
         profileBudget(name, profile.text);
         if (name === 'soul') nameInSoul(profile.text);
       }
-      return [name, { text: profile.text ?? '', revision: profile.revision }];
+      return [name, { text: profile.text ?? '', revision: profile.revision, body: profileBody(name, profile.text ?? '') }];
     }));
   }
   saveProfile(name, text, revision) {
@@ -476,6 +534,99 @@ export class Records {
     if (revision === undefined) throw conflict();
     if (name === 'soul') nameInSoul(text);
     return this.edit(`${name}.md`, () => text, revision);
+  }
+  saveProfileBody(name, body, revision) {
+    if (!['soul', 'user', 'system'].includes(name)) throw fail('不允许的 profile 名称');
+    profileBudget(name, body);
+    if (revision === undefined) throw conflict();
+    const saved = this.edit(`${name}.md`, current => {
+      const next = withProfileBody(name, current, body);
+      profileBudget(name, next);
+      if (name === 'soul') nameInSoul(next);
+      return next;
+    }, revision);
+    return { ...saved, body: profileBody(name, saved.text) };
+  }
+  // 调用方 Store 持有同一个 records 锁，并在全部写入成功后记迁移版本。
+  migrateProfileDefaults() {
+    for (const [name, body] of Object.entries(PROFILE_DEFAULTS)) {
+      const current = this.read(`${name}.md`);
+      if (current.text === null) continue;
+      const oldBody = current.text.slice(profilePrefix(name, current.text).length).trim();
+      if (oldBody && oldBody !== header(name).trim()) continue;
+      const next = withProfileBody(name, current.text, body);
+      profileBudget(name, next);
+      if (name === 'soul') nameInSoul(next);
+      this.write(`${name}.md`, next, current.revision);
+    }
+  }
+  saveSettingsBatch(data) {
+    batchObject(data, ['settings', 'profiles', 'settingsRevision', 'soulRevision']);
+    const settings = Object.hasOwn(data, 'settings') ? data.settings : {};
+    const profiles = Object.hasOwn(data, 'profiles') ? data.profiles : {};
+    batchObject(settings, ['assistantName', ...BOOLEAN_SETTINGS]);
+    batchObject(profiles, ['soul', 'user', 'system']);
+    const hasName = Object.hasOwn(settings, 'assistantName');
+    const name = hasName ? validateAssistantName(settings.assistantName) : null;
+    for (const key of BOOLEAN_SETTINGS) if (Object.hasOwn(settings, key) && typeof settings[key] !== 'boolean') throw fail('开关必须是布尔值');
+    for (const key of ['settingsRevision', 'soulRevision']) if (Object.hasOwn(data, key)) batchRevision(data[key]);
+    for (const [key, value] of Object.entries(profiles)) {
+      batchObject(value, ['body', 'revision']);
+      profileBudget(key, value.body);
+      if (!Object.hasOwn(value, 'revision')) throw conflict();
+      batchRevision(value.revision);
+    }
+    const result = { saved: [], errors: {} };
+    let writing = false, attempted;
+    try {
+      return this.locked(() => {
+        const currentSettings = this.read('settings.md'), oldSettings = booleanSettings(currentSettings.text);
+        const currentProfiles = this.profiles();
+        const bools = Object.fromEntries(BOOLEAN_SETTINGS.filter(key => Object.hasOwn(settings, key)).map(key => [key, settings[key]]));
+        if (Object.keys(bools).length && currentSettings.revision !== data.settingsRevision) throw conflict();
+        if (hasName && currentProfiles.soul.revision !== data.soulRevision) throw conflict();
+        const changes = [];
+        const changedBools = Object.fromEntries(Object.entries(bools).filter(([key, value]) => value !== (oldSettings[key] ?? false)));
+        if (Object.keys(changedBools).length) {
+          const next = currentSettings.text === null ? document('settings', changedBools, '') : withFields(currentSettings.text, changedBools);
+          requireText(next);
+          if (Buffer.byteLength(next) > MAX_RECORD_BYTES) throw fail('Markdown 文件超过 8 MiB 限制');
+          booleanSettings(next);
+          changes.push({ key: 'settings', text: next, revision: currentSettings.revision });
+        }
+        for (const key of ['soul', 'user', 'system']) {
+          const current = currentProfiles[key];
+          if (Object.hasOwn(profiles, key) && current.revision !== profiles[key].revision) throw conflict();
+          if (!Object.hasOwn(profiles, key) && !(key === 'soul' && hasName)) continue;
+          const original = current.revision === null ? null : current.text;
+          let next = Object.hasOwn(profiles, key) ? withProfileBody(key, original, profiles[key].body) : original;
+          if (key === 'soul' && hasName) {
+            if (next === null) next = document('soul', { assistantName: name }, '');
+            else if (validateAssistantName(frontmatter(next).values.get('assistantName')?.value) !== name) next = withFields(next, { assistantName: name });
+          }
+          profileBudget(key, next);
+          if (key === 'soul') nameInSoul(next);
+          if (next !== original) changes.push({ key, text: next, revision: current.revision });
+        }
+        // locked 不可重入：准备阶段不调用 edit/saveProfileBody/setBoolean，全部预检通过才直接原子写。
+        for (const change of changes) {
+          attempted = change.key;
+          writing = true;
+          try { this.write(`${change.key}.md`, change.text, change.revision); result.saved.push(change.key); }
+          catch (error) {
+            // rename 后目录 fsync 也可能失败；回读确认可见的写入，不谎称文件未保存。
+            try { if (this.read(`${change.key}.md`).revision === hash(change.text)) result.saved.push(change.key); } catch {}
+            result.errors[change.key] = batchWriteError(error);
+            break;
+          }
+        }
+        return result;
+      });
+    } catch (error) {
+      if (!writing) throw error;
+      result.errors[attempted] = batchWriteError(error);
+      return result;
+    }
   }
   assistantName(fallback = null) {
     const { text } = this.read('soul.md');
@@ -492,18 +643,7 @@ export class Records {
       return next;
     });
   }
-  settings() {
-    const { text } = this.read('settings.md');
-    if (text === null) return {};
-    const fields = frontmatter(text).values;
-    const values = {};
-    for (const [key, field] of fields) {
-      if (!BOOLEAN_SETTINGS.includes(key)) throw fail('settings.md 只允许非敏感行为配置');
-      if (!['true', 'false'].includes(field.raw)) throw fail('settings.md 行为配置只能是 true 或 false');
-      values[key] = field.raw === 'true';
-    }
-    return values;
-  }
+  settings() { return booleanSettings(this.read('settings.md').text); }
   setBoolean(key, value) {
     if (!BOOLEAN_SETTINGS.includes(key) || typeof value !== 'boolean') throw fail('行为配置必须是 bool');
     this.edit('settings.md', text => {

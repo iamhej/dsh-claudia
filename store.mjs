@@ -31,6 +31,12 @@ export class Store {
         });
         this.db.prepare('INSERT OR IGNORE INTO record_migrations VALUES (?)').run('markdown-v1');
       }
+      this.records.locked(() => {
+        if (!this.db.prepare('SELECT version FROM record_migrations WHERE version=?').get('profile-defaults-v1')) {
+          this.records.migrateProfileDefaults();
+          this.db.prepare('INSERT OR IGNORE INTO record_migrations VALUES (?)').run('profile-defaults-v1');
+        }
+      });
       // 原业务表保留作迁移恢复来源；此后不再作为日记、记忆或配置的读取来源。
       const removeSetting = this.db.prepare('DELETE FROM settings WHERE key=?');
       for (const key of ['assistantName', ...BOOLEAN_SETTINGS]) removeSetting.run(key);
@@ -67,6 +73,8 @@ export class Store {
   updateTodo(id, status, revision) { return this.records.updateTodo(id, status, revision); }
   profiles() { return this.records.profiles(); }
   saveProfile(name, text, revision) { return this.records.saveProfile(name, text, revision); }
+  saveProfileBody(name, body, revision) { return this.records.saveProfileBody(name, body, revision); }
+  saveSettingsBatch(data) { return this.records.saveSettingsBatch(data); }
   reflections() { return this.records.reflections(); }
   saveReflection(entry, expectedRevision) { return this.records.saveReflection(entry, expectedRevision); }
   memoryCandidates() { return this.records.memoryCandidates(); }

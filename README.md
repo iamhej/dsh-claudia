@@ -1,12 +1,25 @@
 # dsh-claudia
 
+> **v0.3.1：更清晰的设置与保存体验。** 修复首次开启采集时设置保存等待初始化的问题；设置分为四个标签，名字、开关及三份设定正文统一保存。新增默认人格正文、紧凑开关状态与安全重启入口。Routine 暂未实现；对话仍没有文件或命令工具权限。
+
 **让个人 AI 助手不止是一个聊天框。**
 
 DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、记忆和能力。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
 
-版本 **0.3.0**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+版本 **0.3.1**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
 
-## 0.3.0 新增
+## 0.3.1 更新
+
+- 设置分为常规、人格与记忆、自动化、数据与维护四个标签。
+- 名字、五个开关与三份设定正文统一点击“保存设置”；切换标签保留草稿，关闭前可保存、放弃或取消。
+- 保存配置不等待时长组件编译；区分已保存、正在应用与运行异常，超时先回读核对，不盲目重复提交。
+- 全文件 revision 校验保护外部编辑；跨文件 I/O 部分成功明确报告，失败草稿保留。名字与 soul 正文合并保存。
+- 只编辑设定正文，保留技术字段。首次升级仅为空白 soul/system 填入默认正文，不覆盖自定义内容、不复活已删除文件，后续主动清空不重填。
+- 灰色关闭、柔绿色开启的紧凑开关；状态与标题同排，不再将调度空闲误报成服务未运行。
+- 重启按钮使用环形箭头加文字；验证自有 supervisor、忙碌状态和待应用版本后才请求重启，不操作未知进程。
+- 新对话工作目录绑定实际 Harness 数据目录。当前执行层仍禁止所有文件和命令工具，不等于开放目录内任意读写，也不是整个宿主的操作系统沙箱。
+
+## 0.3.0 基础功能
 
 - Todo 一行回车新增，勾选完成/撤销，单独忽略；完成与忽略折叠保留。
 - Journal 内区分随手记录与每日回顾，Today 展示最新回顾。
@@ -31,10 +44,10 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 
 ## 安装与启动
 
-从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.0.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
+从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.1.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
 
 ```sh
-dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.0.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.1.tgz --ignore-scripts
 ```
 
 在终端使用包内启动器（下例 home 和端口可按需调整）：
@@ -58,7 +71,7 @@ node "$HOME/.dsh/profiles/web/node_modules/dsh-claudia/bin/claudia.mjs" start \
 从源码或 fork 安装可固定标签，严格复现时改用完整提交号：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.0" --ignore-scripts
+dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.1" --ignore-scripts
 ```
 
 尚未发布 npm registry，不要假设按包名在线安装已可用。peerDependencies 警告可能出现，实际由宿主模块解析回退提供；不要仅因警告而另装第二份 Harness。
@@ -86,7 +99,7 @@ claudia/
   .updates/                已校验更新包、旧版本备份
 ```
 
-Journal、Todo、记忆和三份设定以 Markdown 为主来源。外部编辑请保留 frontmatter、稳定 ID、记录边界；修改正文或 Todo checkbox 可被回读。空文件/损坏格式会明确报错，不会悄悄生成内容覆盖。界面保存使用 revision 防止覆盖其他编辑。单个记录文件上限 8 MiB，三份设定每份最多 12000 字符。
+Journal、Todo、记忆和三份设定以 Markdown 为主来源。外部编辑 Journal、Todo、记忆时须保留 frontmatter、稳定 ID、记录边界。三份设定的旧格式说明注释可删除；soul 仍须保留含唯一 assistantName 的 frontmatter，user/system 可以是普通 Markdown 或空正文。界面只编辑正文，自动保留 soul 技术字段，使用全文件 revision 防止覆盖外部编辑；普通读取不修改文件；保存正文或首次补入默认正文时才移除开头那行旧格式说明。soul/system 在首次升级且正文为空时直接提供默认内容；已有正文、已删除文件不覆盖或复活，迁移完成后主动清空也不重填。修改正文与其他设置统一点击“保存设置”；不会自动填写用户资料或根据聊天改写三份文件。损坏格式会明确报错，不会生成内容覆盖。单个记录文件上限 8 MiB，三份设定每份最多 12000 字符（含元数据）。
 
 聊天 Markdown 是可阅读副本，真正聊天权威仍是 SQLite 和宿主会话日志。外部编辑副本不会篡改模型历史；重新同步时原修改会保存在 `migration/`。首次升级将旧 SQLite Journal/记忆导入 Markdown，不覆盖既有 MD，保留旧业务表。建议升级前在正常停止服务后备份数据目录及相关宿主会话。
 

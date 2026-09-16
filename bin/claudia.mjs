@@ -7,6 +7,7 @@ import { spawn, execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { absolutePath, defaultHome, homeHash, installedPackage, privateDirectory, profileName, readSafe, resolveDsh, resolveExecutable, rollbackInstall, safePath, writePrivate } from '../lifecycle.mjs';
+import { SupervisorRestart } from '../restart.mjs';
 
 const HELP = '用法：dsh-claudia start [--dsh-bin ABS] [--home ABS] [--profile web] [--port 3088] [--plugin-port 4317] [--pnpm-path ABS] [--no-open]\n后台 LaunchAgent 专用：--background；数据目录默认 HOME/claudia，可用 --data-dir ABS 指定。';
 const delay = (ms, signal) => new Promise(resolve => {
@@ -100,7 +101,8 @@ export function makeHostArgs({ profile, hostPort }, overlay) {
 // 包装器与 dsh 在同一 Node 子进程；即使 supervisor 被 SIGKILL，也由 PPID 监视器收掉自有宿主。
 export const CHILD_BOOT = `import {pathToFileURL} from 'node:url';
 const [dsh,...args]=process.argv.slice(1);process.argv=[process.execPath,dsh,...args];
-const parent=process.ppid;let stopping=false;
+const parent=Number(process.env.CLAUDIA_SUPERVISOR_PID)||process.ppid;let stopping=false;
+if(process.ppid!==parent)process.exit(1);
 setInterval(()=>{if(!stopping&&process.ppid!==parent){stopping=true;process.kill(process.pid,'SIGTERM');setTimeout(()=>process.exit(1),5000).unref();}},500).unref();
 const {runCli}=await import(pathToFileURL(dsh).href);
 if(typeof runCli!=='function')throw new Error('dsh 缺少已验证的 runCli 入口');
@@ -135,12 +137,21 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
   const pnpm = o.pnpmPath ? resolveExecutable(o.pnpmPath, 'pnpm') : undefined;
   const url = `http://127.0.0.1:${o.pluginPort}`, token = randomUUID();
   let child, childExit, ready = false, readySince = 0, opened = false, lock, idleRequest, recoveryIdle, trial, launchedVersion, recovered = false, lastNotice = '', disableIdle = false, disableStarted = false;
+  const manual = new SupervisorRestart(o, token);
+  let manualIdle = null, heartbeatTimer, heartbeatError, heartbeatBusy = true, manualMessage = '';
   const stop = new AbortController();
   const onStop = () => stop.abort();
+  const heartbeat = () => {
+    if (!lock || !child?.pid) return;
+    manual.publish({ hostPid: child.pid, version: launchedVersion, busy: heartbeatBusy, state: manual.current ? 'restarting' : manualMessage ? 'pending' : 'idle', message: manualMessage });
+  };
   signal?.addEventListener('abort', onStop, { once: true });
   if (signal?.aborted) stop.abort();
   process.on('SIGINT', onStop); process.on('SIGTERM', onStop);
-  const emergency = () => { if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); };
+  const emergency = () => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    try { if (lock) { manual.clear(); dropLock(lock, token); } } catch {}
+  };
   process.on('exit', emergency);
   const notice = message => { if (message !== lastNotice) { lastNotice = message; log(message); } };
   const openOnce = () => { if (o.open && !opened) { opened = true; openURL(url); } };
@@ -200,6 +211,7 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
       if (child && (child.exitCode !== null || child.signalCode !== null || !child.pid)) {
         const result = await childExit; child = null;
         const reason = `自有宿主已退出（${result.code ?? result.signal ?? '启动失败'}）`;
+        if (manual.current) throw new Error(`手动重启失败：${reason}；停止自动重试，不回滚未备份代码`);
         if (trial) { await recover(reason); continue; }
         if (!o.background || trial || recovered) throw new Error(reason);
         notice('自有后台宿主已退出，等待后重新启动'); await delay(Math.max(pollMs, 1000), stop.signal); continue;
@@ -232,6 +244,8 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
         // profile 的常量配置会覆盖模板中读取 webStartup.port 的表达式，故最终 overlay 也必须改 webserver。
         writePrivate(overlay, JSON.stringify([{ id: 'webserver', config: { host: '127.0.0.1', port: o.hostPort } }, { id: 'dsh-claudia', config }]));
         const update = request();
+        if (manual.current && (update || pkg.manifest.version !== manual.current.desiredVersion)) throw new Error('手动重启期间安装版本或自动更新请求发生变化；停止，不回滚未备份代码');
+        if (!update) manual.assertStartable();
         if (update) {
           if (['rolling-back', 'rollback-failed', 'recovery-failed'].includes(update.value.phase)) throw new Error('上次回滚未完成或旧版启动失败，停止自动启动及重复回滚');
           const expected = update.value.phase === 'rolled-back' ? update.value.oldVersion : update.value.verifiedVersion;
@@ -241,10 +255,12 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
         }
         launchedVersion = pkg.manifest.version;
         const args = makeHostArgs(o, overlay);
-        child = spawn(node, ['--input-type=module', '--eval', CHILD_BOOT, dsh, ...args], { cwd: o.home, env: { ...process.env, DSH_HOME: o.home, CLAUDIA_SUPERVISED: '1', CLAUDIA_SUPERVISOR_HOME_HASH: homeHash(o.home), ...(o.background ? { CLAUDIA_BACKGROUND_LABEL: `com.iamhej.dsh-claudia.${homeHash(o.home)}` } : {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
+        child = spawn(node, ['--input-type=module', '--eval', CHILD_BOOT, dsh, ...args], { cwd: o.home, env: { ...process.env, DSH_HOME: o.home, CLAUDIA_SUPERVISED: '1', CLAUDIA_SUPERVISOR_PID: String(process.pid), CLAUDIA_SUPERVISOR_HOME_HASH: homeHash(o.home), ...(o.background ? { CLAUDIA_BACKGROUND_LABEL: `com.iamhej.dsh-claudia.${homeHash(o.home)}` } : {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
         const current = child;
         childExit = new Promise(resolve => { current.once('exit', (code, signal) => resolve({ code, signal })); current.once('error', error => resolve({ error })); });
-        ready = false; readySince = Date.now(); idleRequest = null; recoveryIdle = null;
+        ready = false; readySince = Date.now(); idleRequest = null; recoveryIdle = null; manualIdle = null; heartbeatBusy = true;
+        heartbeat();
+        heartbeatTimer ||= setInterval(() => { try { heartbeat(); } catch (error) { heartbeatError = error; stop.abort(); } }, 2000);
         for (const stream of [current.stdout, current.stderr]) {
           let pending = '';
           stream.on('data', bytes => {
@@ -261,25 +277,29 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
       } else {
         const ours = child.exitCode === null && child.signalCode === null && sameHome(health, o) && health.pid === child.pid;
         const verified = ready && ours && health.version === launchedVersion;
+        heartbeatBusy = !ours || health.busy !== false;
         if (!verified && Date.now() - readySince > readyTimeout) {
           // 未达 appReady 的宿主也可能已接受其他任务；有 health 时，回滚同样不能绕过 draining。
           if (ours) {
             const idle = health.busy === false;
             if (!idle || recoveryIdle !== child.pid || !await prepareRestart(o, child.pid)) {
               recoveryIdle = idle ? child.pid : null;
+              manualMessage = '启动验证超时，但宿主或其他 agent 尚未确认空闲；等待安全停止';
               notice('启动验证超时，但宿主尚未确认可安全停止；继续等待，不打断其他任务');
               await delay(pollMs, stop.signal); continue;
             }
           }
+          if (manual.current) throw new Error('手动重启失败：等待 appReady 及同 home、同版本健康检查超时；停止，不回滚未备份代码');
           await recover('等待 Claudia plugin ready 日志及同 home、同版本健康检查超时');
           continue;
         }
         if (verified) {
+          if (manual.current) { manual.finish(health); manualMessage = ''; heartbeat(); }
           if (trial) {
             if (trial.value.phase === 'verifying' && health.version === trial.value.verifiedVersion && pkg.manifest.version === trial.value.verifiedVersion) finish(trial, 'applied', health);
             else if (trial.value.phase === 'rolled-back' && health.version === trial.value.oldVersion && pkg.manifest.version === trial.value.oldVersion) finish(trial, 'rolled-back', health);
           }
-          openOnce(); notice(`Claudia plugin ready: ${url}`);
+          openOnce(); if (!manualMessage) notice(`Claudia plugin ready: ${url}`);
           const disablePath = join(o.dataDir, '.runtime', 'background-disable-request.json');
           safePath(disablePath, { missing: true });
           if (o.background && process.platform === 'darwin' && !disableStarted && existsSync(disablePath)) {
@@ -309,15 +329,55 @@ export async function runSupervisor(input, { signal, openURL = openBrowser, log 
               } else idleRequest = update.identity;
             } else idleRequest = null;
           } else idleRequest = null;
-        }
+          if (!update && !trial && !disableStarted) {
+            let pending;
+            try { pending = manual.pending(child.pid); if (!pending) manualMessage = ''; }
+            catch { manualMessage = '手动重启记录不安全或范围无效；不消费请求、不停止宿主'; }
+            if (pending) {
+              const id = JSON.stringify(pending), idle = health.busy === false;
+              manualMessage = idle ? '手动重启等待双次空闲检查与 draining 握手' : '宿主或其他 agent 忙碌，等待空闲后手动重启';
+              if (pkg.manifest.version !== pending.desiredVersion) {
+                manualIdle = null; manualMessage = '已安装版本与手动请求不一致；不停止宿主';
+              } else if (idle && manualIdle === id) {
+                manualIdle = null;
+                if (await prepareRestart(o, child.pid) && !stop.signal.aborted) {
+                  try { manual.start(pending, child.pid); }
+                  catch { manualMessage = '手动重启请求已变化或无法安全消费；不停止宿主'; }
+                  if (manual.current) {
+                    manualMessage = '手动重启已完成 draining，正在验证新版 appReady 与健康检查'; heartbeat();
+                    await stopChild();
+                    notice('已安全停止自有宿主；手动重启不使用自动更新备份或回滚流程');
+                    continue;
+                  }
+                } else manualMessage = '宿主尚未确认可安全重启，等待其他 agent 或握手条件满足';
+              } else manualIdle = idle ? id : null;
+            } else manualIdle = null;
+            if (manualMessage) notice(manualMessage);
+          } else manualIdle = null;
+        } else manualIdle = null;
       }
       await delay(pollMs, stop.signal);
     }
+    if (heartbeatError) throw heartbeatError;
     return { stopped: true, url };
+  } catch (error) {
+    if (manual.current) manual.finish(null, '手动重启失败；停止自动重试，不回滚未备份代码');
+    throw error;
   } finally {
+    clearInterval(heartbeatTimer);
     // launchctl 的 bootout 只针对本 label；任何前台/外部 health PID 都不会传入 kill。
-    await stopChild(); dropLock(lock, token);
-    process.off('SIGINT', onStop); process.off('SIGTERM', onStop); process.off('exit', emergency); signal?.removeEventListener('abort', onStop);
+    try {
+      if (manual.current) manual.finish(null, 'supervisor 在手动重启确认前退出；未回滚安装代码');
+    } finally {
+      try { await stopChild(); }
+      finally {
+        try { if (lock) manual.clear(); }
+        finally {
+          try { dropLock(lock, token); }
+          finally { process.off('SIGINT', onStop); process.off('SIGTERM', onStop); process.off('exit', emergency); signal?.removeEventListener('abort', onStop); }
+        }
+      }
+    }
   }
 }
 

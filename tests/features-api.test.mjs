@@ -6,6 +6,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../server.mjs';
+import { PROFILE_DEFAULTS } from '../records.mjs';
 
 const testOptions = { timeout: 15_000 };
 const featureBools = ['activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
@@ -183,6 +184,13 @@ test('createServices 注入真实临时 Store、替身 runtime、动态 isBusy �
   for (const key of boolKeys) assert.equal(state.settings[key], false, key);
   for (const key of ['todos', 'reflections', 'memoryCandidates', 'journal', 'memories', 'messages']) assert.deepEqual(state[key], []);
   assert.deepEqual(Object.keys(state.profiles).sort(), ['soul', 'system', 'user']);
+  assert.deepEqual(state.profileDefaults, PROFILE_DEFAULTS);
+  for (const name of ['soul', 'user', 'system']) {
+    const body = name === 'user' ? '' : PROFILE_DEFAULTS[name];
+    const text = (name === 'soul' ? '---\nassistantName: "Claudia"\n---\n' : '') + body;
+    assert.deepEqual(state.profiles[name], { text, revision: digest(text), body });
+    assert.equal(await f.read(`${name}.md`), text);
+  }
   assert.equal(state.dataDirectory, f.dataDir);
   assert.equal(state.hostUrl, `${f.app.url}/synthetic-harness`);
   assert.deepEqual(state.activity, f.app.services.activity.status());
@@ -261,7 +269,7 @@ test('三个 profile 保存完整 MD 和 revision，拒绝过期、缺失及 nul
     assert.deepEqual(saved, { text, revision: digest(text) });
     for (const revision of [before.revision, undefined, null]) assertStatus(await f.post(`/api/profiles/${name}`, { text: before.text, revision }), 409);
     assert.equal(await f.read(`${name}.md`), text);
-    assert.deepEqual((await f.state()).profiles[name], saved);
+    assert.deepEqual((await f.state()).profiles[name], { ...saved, body: (name === 'user' ? '' : PROFILE_DEFAULTS[name]) + '\n# 测试设定\n保留空行\n\n' });
   }
   const profiles = (await f.state()).profiles;
   await f.restart();
@@ -325,7 +333,7 @@ test('外部 profile 与四 bool MD 修改立即回读，不隐式启用后台�
     let text = before.profiles[name].text + '\n外部追加的设定\n';
     if (name === 'soul') text = text.replace('"Claudia"', '"外部昵称"');
     await f.write(`${name}.md`, text);
-    assert.deepEqual((await f.state()).profiles[name], { text, revision: digest(text) });
+    assert.deepEqual((await f.state()).profiles[name], { text, revision: digest(text), body: (name === 'user' ? '' : PROFILE_DEFAULTS[name]) + '\n外部追加的设定\n' });
     assertStatus(await f.post(`/api/profiles/${name}`, { text: before.profiles[name].text, revision: before.profiles[name].revision }), 409);
   }
   let settings = await f.read('settings.md');

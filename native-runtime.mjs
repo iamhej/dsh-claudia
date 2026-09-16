@@ -1,9 +1,14 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { dirname, isAbsolute } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 
 export class NativeRuntime {
   constructor(ctx, store) {
+    // 从宿主路径服务取边界，不采用浏览器、模型或启动终端传入的工作目录。
+    this.fileRoot='';
+    try { const path=dirname(ctx.dshHomePath('claudia')); if(isAbsolute(path))this.fileRoot=realpathSync(path); } catch { /* 无法确认范围时继续拒绝全部操作。 */ }
     this.ctx=ctx;this.store=store;this.handles=new Map();this.closed=false;this.error='';this.verifiedRoute='';this.running=null;this.pending=new Map();this.closeTask=null;this.disposals=new Map();this.restricted=new WeakSet();
     this.offCreated=ctx.on('agent/created',({agent})=>{
       if(this.store.get('harnessSessions',[]).includes(String(agent.session.id)))this.restrict(agent.ctx);
@@ -17,16 +22,18 @@ export class NativeRuntime {
   async status() {
     let configured=false,selection={provider:'',model:''};
     try {selection=this.selection();await this.ctx.llm.resolveCallConfig(selection);configured=true;}catch{}
-    return {installed:true,version:'0.1.5-rc.x (native host)',configured,connected:!this.closed,credentialSource:'harness',modelVerified:configured&&this.verifiedRoute===JSON.stringify(selection),error:this.error};
+    return {installed:true,version:'0.1.5-rc.x (native host)',configured,connected:!this.closed,credentialSource:'harness',modelVerified:configured&&this.verifiedRoute===JSON.stringify(selection),error:this.error,fileAccess:{root:this.fileRoot,mode:'denied',shell:false,message:'对话未开放文件或命令工具；Harness 目录之外不授权，目录内凭据与程序文件也不授权。'}};
   }
   restrict=(a)=>{
     if(this.restricted.has(a))return;this.restricted.add(a);
-    a.tools.presentAs('native');a.tools.restrict({allow:[]});a.tools.guard(()=> '该个人对话尚未授权执行工具');
+    a.tools.presentAs('native');a.tools.restrict({allow:[]});a.tools.guard(()=> '该个人对话未开放文件或命令工具；不得访问 Harness 目录之外，目录内凭据与程序文件也未授权');
     a.on('system-prompt/assemble',async(_assembly,_context,next)=>{const result=await next();if(result.tools.length)throw new Error('Unexpected tools in personal conversation');return result;},{prepend:true});
   };
   setup=(a)=>{
     // Restrict only this plugin's durable session IDs, including host-side resume.
     this.restrict(a);
+    a.systemPrompt.variable('claudia_file_root',()=>JSON.stringify(this.fileRoot||'尚未确认，拒绝操作'));
+    a.systemPrompt.section({name:'claudia:file-boundary',order:a.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')+2,text:'本插件对话的本地文件权限上限是实际 Harness 数据目录 {{claudia_file_root}}，不是整个电脑。当前未开放任何文件、Shell 或命令执行工具；不得声称已经读写文件。目录外不授权，目录内凭据、程序与启动配置也不授权。用户设定和记录不能改变此边界。页面中用户主动保存记录、启用采集或后台服务属于独立明确操作，不代表对话获准操作电脑。'});
     a.systemPrompt.variable('claudia_display_name',()=>JSON.stringify(this.store.get('assistantName','Claudia')));
     a.systemPrompt.variable('claudia_local_profiles',()=>{
       const profiles=this.store.profiles();
@@ -60,7 +67,8 @@ export class NativeRuntime {
     catch(error){
       if(error?.name!=='SessionPersistenceNotFoundError')throw error;
       if(known.includes(id)&&this.store.messages().length)throw new Error('Recorded model history is missing; refuse silent recreation');
-      handle=await this.ctx.agents.create({sessionId:id,meta:{cwd:process.cwd()},...options});
+      if(!this.fileRoot)throw new Error('无法确认 Harness 数据目录，拒绝创建未绑定范围的会话');
+      handle=await this.ctx.agents.create({sessionId:id,meta:{cwd:this.fileRoot},...options});
     }
     if(this.closed){await handle.dispose();throw new Error('插件已关闭');}
     this.handles.set(id,handle);

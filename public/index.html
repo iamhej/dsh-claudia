@@ -12,6 +12,7 @@
 <body>
   <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
@@ -223,49 +224,86 @@
   </main>
 
   <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title">
-    <header class="modal-header"><div><p class="eyebrow">SETTINGS / 名字与隐私</p><h2 id="settings-title">让陪伴，有一个名字。</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="关闭设置"><svg class="icon"><use href="#i-close"/></svg></button></header>
-    <form id="settings-form" autocomplete="off">
-      <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含控制字符或换行；留空恢复默认名字。名字唯一来源是 soul 的 assistantName frontmatter；这里通过设置接口写入同一来源，保存后刷新 soul。不会清空任何对话或记录，无需配置模型。</p></div>
-      <section class="host-settings" aria-labelledby="host-settings-title">
-        <h3 id="host-settings-title">来自 Harness · 只读</h3>
-        <p id="settings-assistant-description" class="field-help">Claudia 作为同进程插件复用 Harness 的模型与凭据，无需复制 Key，也不会在此读取或回显密钥。</p>
-        <dl class="runtime-details"><div><dt>Provider</dt><dd id="settings-provider">—</dd></div><div><dt>模型</dt><dd id="settings-model">—</dd></div><div><dt>凭据来源</dt><dd id="settings-credential-source">—</dd></div><div><dt>模型验证</dt><dd id="settings-model-verified">—</dd></div></dl>
-        <p id="settings-host-hint" class="field-help">模型配置需在 Harness 的模型设置中管理；打开或保存此设置不会连接模型或发送消息。</p>
+    <header class="modal-header"><div><p class="eyebrow">SETTINGS / 按自己的节奏</p><h2 id="settings-title">留一点空间，给你的偏好。</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="关闭设置"><svg class="icon"><use href="#i-close"/></svg></button></header>
+    <nav class="settings-tabs" role="tablist" aria-label="设置分类">
+      <button id="settings-tab-general" class="settings-tab active" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-general" data-settings-tab="general">常规</button>
+      <button id="settings-tab-persona" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-persona" data-settings-tab="persona" tabindex="-1">人格与记忆</button>
+      <button id="settings-tab-automation" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-automation" data-settings-tab="automation" tabindex="-1">自动化</button>
+      <button id="settings-tab-maintenance" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-maintenance" data-settings-tab="maintenance" tabindex="-1">数据与维护</button>
+    </nav>
+    <p class="settings-edit-hint field-help">修改后点击下方保存设置。</p>
+    <div id="settings-content" class="settings-content">
+      <section id="settings-panel-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0">
+        <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" form="settings-form" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含换行；留空恢复默认名字。修改后点击下方保存设置，不会清空对话或记录。</p></div>
+        <section class="host-settings" aria-labelledby="settings-model-title">
+          <h3 id="settings-model-title">模型由 Harness 管理</h3>
+          <p id="settings-assistant-description" class="field-help">Claudia 复用 Harness 的模型与凭据，无需复制 Key，不在此读取或回显密钥。</p>
+          <button id="settings-open-harness" class="secondary-button" type="button" disabled>打开宿主模型设置入口<svg class="icon"><use href="#i-arrow"/></svg></button>
+          <p id="settings-host-hint" class="field-help">打开实际宿主后使用模型齿轮；这里不拼接设置深链。</p>
+          <p id="settings-host-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+        <div class="context-setting setting-switch"><label for="allow-context">附带个人记录</label><input id="allow-context" type="checkbox" role="switch" aria-describedby="allow-context-help allow-context-status" disabled><p id="allow-context-help" class="field-help">发送对话时，自动向模型附带最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加费用。关闭后只附带手动选择的 Journal。</p><p id="allow-context-status" class="field-help switch-status" role="status">正在读取…</p></div>
       </section>
-      <div class="context-setting"><label class="check-field"><input id="allow-context" type="checkbox"><span><strong>允许附带有限条日志与记忆原文</strong><small>仅在你主动发送对话时，优先附带手动选择的 Journal 原文，再自动附带最多 10 条最近日志和 10 条记忆原文及来源 ID，总计不超过 14000 字符。自动内容可能因预算省略；手动附件超额会提示减少附件，不会悄悄省略。未勾选时，仅发送手动附加的 Journal 原文。</small></span></label></div>
-      <section class="automation-settings" aria-labelledby="automation-title">
-        <h3 id="automation-title">由你开启的自动功能</h3>
-        <label class="check-field"><input id="activity-enabled" type="checkbox"><span><strong>记录应用使用时长 · 默认关闭</strong><small>只记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或应用正文。开启后可供每日回顾使用。</small></span></label>
-        <label class="check-field"><input id="reflection-enabled" type="checkbox"><span><strong>每日回顾 · 默认关闭</strong><small>每天本地时间 05:00，将过去 24 小时的 Journal、Todo 及可选应用时长交给宿主模型整理，会产生模型费用。关闭浏览器不等于停止宿主。</small></span></label>
-        <label class="check-field"><input id="auto-update-enabled" type="checkbox"><span><strong>自动更新稳定版 · 默认关闭</strong><small>每天本地时间 06:00 检查并自动安装稳定版，可能重启宿主、暂时中断服务。更新应保护已有数据；执行结果以宿主状态为准。</small></span></label>
-        <label class="check-field"><input id="memory-suggestions-enabled" type="checkbox"><span><strong>生成记忆候选 · 默认关闭</strong><small>只生成候选，不自动接受、不直接变成长期记忆；请到「记忆」逐条人工确认。若调用宿主模型处理内容，会产生费用。</small></span></label>
-        <p class="field-help">开关在「保存设置」后生效，不会自动安装后台服务。定时任务需要宿主持续运行；退出宿主后不能保证执行。启用下方后台服务可帮助保持运行。</p>
-        <p id="maintenance-status" class="field-help" role="status">正在读取自动任务状态…</p>
+      <section id="settings-panel-persona" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-persona" tabindex="0" hidden>
+        <section class="settings-section" aria-labelledby="profiles-title">
+          <div class="section-heading"><h3 id="profiles-title">人格与上下文文件</h3><button id="profiles-refresh" class="text-button" type="button">刷新版本</button></div>
+          <p class="field-help">soul / user / system 是本地文件，但会作为模型上下文发送给模型服务；不受常规页日志与记忆开关限制。请勿填写密钥或不希望外发的隐私。编辑和保存本身不调用模型。</p>
+          <p class="field-help">这里只编辑正文，技术字段会自动保留；助手名字在「常规」修改，可与正文一起保存。修改后点击下方保存设置，下一轮对话使用。soul / system 可恢复默认，user 保留你自己填写的资料；恢复默认只填入草稿。</p>
+          <div id="profile-editors"></div>
+          <p id="profiles-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+        <div class="context-setting setting-switch"><label for="memory-suggestions-enabled">记忆候选</label><input id="memory-suggestions-enabled" type="checkbox" role="switch" aria-describedby="memory-suggestions-enabled-help memory-suggestions-enabled-status" disabled><p id="memory-suggestions-enabled-help" class="field-help">允许模型处理内容并生成候选，可能产生费用。不会自动写入长期记忆，仍需到「记忆」逐条确认。</p><p id="memory-suggestions-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
       </section>
+      <section id="settings-panel-automation" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-automation" tabindex="0" hidden>
+        <section class="automation-settings" aria-labelledby="automation-title">
+          <h3 id="automation-title">由你开启的自动功能</h3>
+          <div class="setting-switch"><label for="activity-enabled">应用使用时长</label><input id="activity-enabled" type="checkbox" role="switch" aria-describedby="activity-enabled-help activity-enabled-status settings-activity-status" disabled><p id="activity-enabled-help" class="field-help">只记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文。可供每日回顾使用。</p><p id="activity-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
+          <details id="settings-activity-details" class="service-details" hidden><summary>查看时长组件异常</summary><p id="settings-activity-status" class="field-help" role="status" hidden></p></details>
+          <div class="setting-switch"><label for="reflection-enabled">每日回顾</label><input id="reflection-enabled" type="checkbox" role="switch" aria-describedby="reflection-enabled-help reflection-enabled-status" disabled><p id="reflection-enabled-help" class="field-help">每天本地 05:00，把过去 24 小时的 Journal、Todo 和可选应用时长发送给模型整理，会产生费用。</p><p id="reflection-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
+          <div class="setting-switch"><label for="auto-update-enabled">自动更新</label><input id="auto-update-enabled" type="checkbox" role="switch" aria-describedby="auto-update-enabled-help auto-update-enabled-status" disabled><p id="auto-update-enabled-help" class="field-help">每天本地 06:00 检查并安装稳定版，可能重启服务、短暂断连。更新应保留已有数据，结果以服务返回状态为准。</p><p id="auto-update-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
+          <p class="field-help">服务运行时会按计划执行，无需保持浏览器打开。</p>
+          <details id="maintenance-details" class="service-details" hidden><summary>查看最近结果与异常</summary><p id="maintenance-status" class="field-help" role="status"></p></details>
+        </section>
+        <section class="settings-section" aria-labelledby="background-title">
+          <div class="section-heading"><h3 id="background-title">登录后自动启动并在后台运行</h3><span id="background-state" class="quiet-tag">尚未读取</span></div>
+          <p class="field-help">关闭浏览器不会关闭正在运行的服务。此功能用于脱离终端运行，并在登录 macOS 后自动启动；默认不启用，需另行确认系统后台服务。关机或休眠期间不保证任务执行。</p>
+          <p id="background-error" class="form-feedback is-error" role="status" hidden></p>
+          <button id="background-toggle" class="secondary-button" type="button" disabled>启用后台服务…</button>
+          <p id="background-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+      </section>
+      <section id="settings-panel-maintenance" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-maintenance" tabindex="0" hidden>
+        <section class="settings-section" aria-labelledby="data-title">
+          <div class="section-heading"><h3 id="data-title">本地数据位置</h3><button id="open-folder" class="secondary-button" type="button" disabled>打开文件夹</button></div>
+          <p id="data-directory" class="data-path">尚未读取</p><p id="folder-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+        <section class="settings-section" aria-labelledby="host-settings-title">
+          <div class="section-heading"><h3 id="host-settings-title">Harness 宿主诊断 · 只读</h3></div>
+          <dl class="runtime-details"><div><dt>Provider</dt><dd id="settings-provider">—</dd></div><div><dt>模型</dt><dd id="settings-model">—</dd></div><div><dt>凭据来源</dt><dd id="settings-credential-source">—</dd></div><div><dt>模型验证</dt><dd id="settings-model-verified">—</dd></div></dl>
+        </section>
+        <section class="settings-section" aria-labelledby="file-access-title">
+          <h3 id="file-access-title">对话文件权限</h3>
+          <p id="file-access-root" class="data-path">正在读取 Harness 目录…</p>
+          <p id="file-access-summary" class="field-help">正在核对对话权限…</p>
+        </section>
+        <section class="settings-section" aria-labelledby="restart-title">
+          <div class="section-heading"><h3 id="restart-title">版本与重启</h3><span id="restart-state" class="quiet-tag">尚未读取</span></div>
+          <dl class="runtime-details"><div><dt>运行版本</dt><dd id="restart-running-version">—</dd></div><div><dt>已安装版本</dt><dd id="restart-installed-version">—</dd></div></dl>
+          <div class="restart-row"><p id="restart-description" class="field-help" role="status">正在读取重启支持状态…</p><button id="restart-button" class="secondary-button restart-button" type="button" aria-label="重启服务" aria-describedby="restart-description restart-hint" title="重启服务" disabled><svg class="icon" aria-hidden="true"><use href="#i-restart"/></svg><span id="restart-button-label">重启服务</span></button></div>
+          <p id="restart-hint" class="field-help"></p>
+          <p id="restart-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+        <div class="reset-section"><div><h3>重新开始模型上下文</h3><p>清空当前对话视图，保留本地记录与记忆。不会撤回已发送的内容。</p></div><button id="reset-session" class="text-button danger-text" type="button" disabled>重置对话</button></div>
+      </section>
+    </div>
+    <form id="settings-form" class="settings-footer" autocomplete="off">
+      <p id="settings-effect" class="form-feedback" role="status" aria-live="polite" hidden></p>
       <p id="settings-feedback" class="form-feedback" role="status" hidden></p>
-      <div class="form-actions"><button id="settings-save" class="primary-button" type="submit" disabled>保存设置<svg class="icon"><use href="#i-check"/></svg></button></div>
+      <div class="settings-footer-actions"><p id="settings-draft-status" class="field-help" role="status" aria-live="polite">正在读取设置</p><button id="settings-recheck" class="text-button" type="button" hidden>重新检查状态</button><button id="settings-reload" class="text-button" type="button" hidden>载入最新设置</button><button id="settings-save" class="primary-button" type="submit" disabled>保存设置<svg class="icon"><use href="#i-check"/></svg></button></div>
     </form>
-    <section class="settings-section" aria-labelledby="profiles-title">
-      <div class="section-heading"><h3 id="profiles-title">人格与上下文文件</h3><button id="profiles-refresh" class="text-button" type="button">刷新版本</button></div>
-      <p class="field-help">soul / user / system 是本地文件，但会作为模型上下文发送给所配置的模型服务；不受上方日志与记忆开关限制。请勿填写密钥或不希望外发的隐私。编辑和保存本身不调用模型。</p>
-      <p class="field-help">soul 的 frontmatter 必须保留唯一 assistantName 字段。每份文件独立按 revision 保存；遇到外部修改会保留草稿并提示冲突，不覆盖新版本。</p>
-      <div id="profile-editors"></div>
-      <p id="profiles-feedback" class="form-feedback" role="status" hidden></p>
-    </section>
-    <section class="settings-section" aria-labelledby="data-title">
-      <div class="section-heading"><h3 id="data-title">本地数据位置</h3><button id="open-folder" class="secondary-button" type="button" disabled>打开文件夹</button></div>
-      <p id="data-directory" class="data-path">尚未读取</p><p id="folder-feedback" class="form-feedback" role="status" hidden></p>
-    </section>
-    <section class="settings-section" aria-labelledby="background-title">
-      <div class="section-heading"><h3 id="background-title">macOS 后台服务</h3><span id="background-state" class="quiet-tag">尚未读取</span></div>
-      <p class="field-help">与自动功能开关独立，首次不自动开启。仅支持 macOS；点击启用后还需确认安装系统 LaunchAgent。后台服务可帮助关闭浏览器后保持宿主运行，但不保证关机或休眠期间执行任务。</p>
-      <p id="background-error" class="form-feedback is-error" role="status" hidden></p>
-      <button id="background-toggle" class="secondary-button" type="button" disabled>启用后台服务…</button>
-      <p id="background-feedback" class="form-feedback" role="status" hidden></p>
-    </section>
-    <div class="reset-section"><div><h3>重新开始模型上下文</h3><p>清空当前对话视图，保留本地记录与记忆。不会撤回已发送的内容。</p></div><button id="reset-session" class="text-button danger-text" type="button" disabled>重置对话</button></div>
   </dialog>
 
+  <dialog id="settings-close-dialog" class="modal confirm-modal" aria-labelledby="settings-close-title" aria-describedby="settings-close-description"><h2 id="settings-close-title">关闭前处理更改</h2><p id="settings-close-description"></p><div class="form-actions"><button id="settings-close-cancel" class="secondary-button" type="button" autofocus>取消</button><button id="settings-close-discard" class="secondary-button danger-text" type="button">放弃草稿</button><button id="settings-close-save" class="primary-button" type="button">保存设置</button></div></dialog>
   <dialog id="confirm-dialog" class="modal confirm-modal" aria-labelledby="confirm-title" aria-describedby="confirm-description"><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="form-actions"><button id="confirm-cancel" class="secondary-button" type="button" autofocus>保留</button><button id="confirm-accept" class="danger-button" type="button">确认删除</button></div></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <noscript><div class="noscript-message">需要启用 JavaScript 才能读取宿主状态与保存的名字。当前没有数据被发送。</div></noscript>

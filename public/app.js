@@ -14,15 +14,28 @@
     journal: [], memories: [], messages: [], todos: [], reflections: [], memoryCandidates: [], profiles: {}, runtime: {},
     settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: '',
     dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
-    background: { enabled: false, supported: false }, features: {}
+    background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
+    restart: { supported: false, pending: false, state: 'idle' }, busy: false
   };
   const pending = new Set();
   const profileDrafts = new Map();
   const reflectionDrafts = new Map();
   let selectedReflectionId = '';
   let journalView = 'notes';
-  let settingsNameBaseline = defaultAssistantName;
   let settingsNameRevision;
+  let settingsBaselineRevision;
+  let settingsDraft = null;
+  let settingsClosing = false;
+  let settingsCloseResolver = null;
+  const settingsTabs = ['general', 'persona', 'automation', 'maintenance'];
+  let settingsTab = 'general';
+  let settingsBaseline = null;
+  let settingsReceipt = null;
+  let settingsReturnFocus = null;
+  let settingsPollTimer;
+  let settingsPolling = false;
+  let restartInFlight = false;
+  let restartConfirming = false;
   let todoComposing = false;
   let todoCompositionEndedAt = -Infinity;
   let statusRefreshing = false;
@@ -109,7 +122,6 @@
     $('settings-open').title = `${name} · 名字与设置`;
     $('assistant-name-input').placeholder = name;
     $('assistant-name-input').title = name;
-    if (!$('settings-dialog').open && !settingsSaving) $('assistant-name-input').value = name;
     $('memory-input-label').textContent = `想让 ${name} 记住的一件事`;
     $('welcome-copy').textContent = `零散的念头、今天的小事，或一个还没想明白的问题，都可以和 ${name} 聊聊。`;
     $('settings-assistant-description').textContent = `${name} 作为同进程插件复用 Harness 的模型与凭据，无需复制 Key，也不会在此读取或回显密钥。`;
@@ -168,7 +180,11 @@
       if (!response.ok) throw apiError(payload, response.status);
       return payload;
     } catch (error) {
-      if (error.name === 'AbortError') throw new Error('本机服务响应超时。操作可能已完成，请先重新加载记录再决定是否重试。');
+      if (error.name === 'AbortError') {
+        const timeoutError = new Error('本机服务响应超时。操作可能已完成，请先读取状态再决定是否重试。');
+        timeoutError.name = 'TimeoutError';
+        throw timeoutError;
+      }
       throw error;
     } finally {
       window.clearTimeout(timeout);
@@ -204,6 +220,29 @@
     return [...unique.values()];
   }
 
+  function applySettingsSnapshot(payload) {
+    const settings = payload.settings || {};
+    // 只接收公开设置和纯正文；完整文件仍由后端保留。
+    state.settings = {
+      assistantName: asText(settings.assistantName).trim() || defaultAssistantName,
+      provider: asText(payload.runtime?.provider ?? settings.provider ?? state.settings.provider),
+      model: asText(payload.runtime?.model ?? settings.model ?? state.settings.model)
+    };
+    for (const field of Object.keys(settingFields)) state.settings[field] = settings[field] === true;
+    state.settingsRevision = payload.settingsRevision;
+    if (payload.profileDefaults) state.profileDefaults = {
+      soul: payload.profileDefaults.soul, system: payload.profileDefaults.system
+    };
+    state.profiles = {};
+    for (const name of profileNames) {
+      const profile = payload.profiles?.[name];
+      if (profile) state.profiles[name] = { text: typeof profile.body === 'string' ? profile.body : undefined, revision: profile.revision };
+      syncDraft(profileDrafts.get(name), typeof state.profiles[name]?.text === 'string' ? state.profiles[name] : undefined);
+    }
+    syncSettingsDraft();
+    reconcileSettingsReceipt();
+  }
+
   function applyState(payload) {
     if (!payload || !Array.isArray(payload.journal) || !Array.isArray(payload.memories) || !Array.isArray(payload.messages)) {
       throw new Error('本机状态数据不完整，暂时无法显示记录。');
@@ -227,16 +266,10 @@
       installed: runtime.installed === true, version: asText(runtime.version),
       configured: runtime.configured === true, connected: runtime.connected === true,
       credentialSource: runtime.credentialSource === 'harness' ? 'harness' : '',
-      modelVerified: runtime.modelVerified === true, error: asText(runtime.error)
+      modelVerified: runtime.modelVerified === true, error: asText(runtime.error),
+      fileAccess: { root: asText(runtime.fileAccess?.root), mode: asText(runtime.fileAccess?.mode), message: asText(runtime.fileAccess?.message) }
     };
-    const settings = payload.settings || {};
-    // 仅接收公开元数据；不读取凭据对象或任何密钥字段。
-    state.settings = {
-      // assistantName 是服务端从 soul frontmatter 解析的展示投影，不在浏览器另存名字。
-      assistantName: asText(settings.assistantName).trim() || defaultAssistantName,
-      provider: asText(runtime.provider ?? settings.provider), model: asText(runtime.model ?? settings.model)
-    };
-    for (const field of Object.keys(settingFields)) state.settings[field] = settings[field] === true;
+    applySettingsSnapshot(payload);
     state.features = {
       todos: Array.isArray(payload.todos), reflections: Array.isArray(payload.reflections),
       memoryCandidates: Array.isArray(payload.memoryCandidates), automation: Boolean(payload.maintenance),
@@ -245,17 +278,21 @@
     state.todos = entriesFrom(payload.todos, 'todos');
     state.reflections = entriesFrom(payload.reflections, 'reflections');
     state.memoryCandidates = entriesFrom(payload.memoryCandidates, 'memoryCandidates');
-    state.profiles = {};
-    for (const name of profileNames) {
-      const profile = payload.profiles?.[name];
-      if (typeof profile?.text === 'string') state.profiles[name] = { text: profile.text, revision: profile.revision };
-      syncDraft(profileDrafts.get(name), state.profiles[name]);
-    }
     for (const [id, draft] of reflectionDrafts) syncDraft(draft, state.reflections.find((entry) => entry.id === id));
     state.dataDirectory = asText(payload.dataDirectory);
     state.hostUrl = asText(payload.hostUrl);
     state.maintenance = payload.maintenance || {};
     state.activity = payload.activity || {};
+    state.settingsEffect = {
+      state: asText(payload.settingsEffect?.state), message: asText(payload.settingsEffect?.message),
+      restartRequired: payload.settingsEffect?.restartRequired
+    };
+    state.restart = {
+      supported: payload.restart?.supported === true, pending: payload.restart?.pending === true,
+      state: asText(payload.restart?.state), reason: asText(payload.restart?.reason), message: asText(payload.restart?.message),
+      runningVersion: asText(payload.restart?.runningVersion), installedVersion: asText(payload.restart?.installedVersion)
+    };
+    state.busy = payload.busy === true || runtime.busy === true;
     const summary = payload.activitySummary || {};
     state.activitySummary = {
       seconds: Number.isFinite(summary.seconds) ? Math.max(0, summary.seconds) : 0,
@@ -285,16 +322,21 @@
     updateControls();
   }
 
-  async function refreshState() {
+  async function refreshState(options = {}) {
     const sequence = ++refreshSequence;
     try {
-      const payload = await api('/api/state');
+      const payload = await api('/api/state', { timeout: options.timeout });
       if (sequence !== refreshSequence) return false;
       applyState(payload);
       hasState = true;
       offline = false;
       $('connection-notice').hidden = true;
-      renderAll();
+      if (options.quiet) {
+        renderIdentity();
+        renderRuntime();
+        renderServices();
+        updateControls();
+      } else renderAll();
       return true;
     } catch (error) {
       if (sequence === refreshSequence) showConnectionError(error);
@@ -303,7 +345,7 @@
   }
 
   async function bootstrap() {
-    if (booting || activeRun) return;
+    if (booting || activeRun || restartInFlight) return;
     booting = true;
     offline = false;
     $('retry-load').disabled = true;
@@ -459,7 +501,7 @@
     }
   }
 
-  function canMutate() { return hasState && !offline && !booting && Boolean(csrfToken); }
+  function canMutate() { return hasState && !offline && !booting && !restartInFlight && state.restart.state !== 'restarting' && Boolean(csrfToken); }
   function validRevision(revision) { return typeof revision === 'string' && revision.length > 0 || typeof revision === 'number' && Number.isFinite(revision); }
   function profileBusy() { return [...profileDrafts.values()].some((draft) => draft.saving || draft.awaiting); }
   function newDraft(entry) {
@@ -570,10 +612,10 @@
     for (const name of profileNames) {
       const details = element('details', 'profile-editor');
       details.id = `profile-${name}`;
-      const summary = element('summary', '', `${name} · ${name === 'soul' ? '名字与人格' : name === 'user' ? '关于你' : '系统偏好'}`);
+      const summary = element('summary', '', `${name} · ${name === 'soul' ? '人格' : name === 'user' ? '关于你' : '交流偏好'}`);
       const form = element('form');
       form.id = `profile-${name}-form`;
-      const label = element('label', 'field-label', `${name} Markdown 原文`);
+      const label = element('label', 'field-label', `${name} 正文`);
       label.htmlFor = `profile-${name}-input`;
       const input = element('textarea', 'note-input profile-input');
       input.id = `profile-${name}-input`;
@@ -584,17 +626,20 @@
       status.id = `profile-${name}-status`;
       status.setAttribute('role', 'status');
       const actions = element('div', 'form-actions');
+      const restore = name === 'user' ? null : element('button', 'secondary-button', '恢复默认');
+      if (restore) {
+        restore.id = `profile-${name}-restore`;
+        restore.type = 'button';
+      }
       const reload = element('button', 'secondary-button', '载入最新版本');
       reload.id = `profile-${name}-reload`;
       reload.type = 'button';
-      const save = element('button', 'primary-button', '保存文件');
-      save.id = `profile-${name}-save`;
-      save.type = 'submit';
+      if (restore) actions.append(restore);
       const message = element('p', 'form-feedback');
       message.id = `profile-${name}-feedback`;
       message.setAttribute('role', 'status');
       message.hidden = true;
-      actions.append(reload, save);
+      actions.append(reload);
       form.append(label, input, status, actions, message);
       details.append(summary, form);
       $('profile-editors').append(details);
@@ -607,33 +652,54 @@
         renderProfiles();
         updateControls();
       });
-      form.addEventListener('submit', (event) => { event.preventDefault(); void saveRevision('profile', name); });
+      form.addEventListener('submit', (event) => { event.preventDefault(); void saveSettings(); });
       reload.addEventListener('click', () => void reloadRevision('profile', name));
+      restore?.addEventListener('click', async () => {
+        const draft = profileDrafts.get(name);
+        const body = state.profileDefaults[name];
+        if (!draft || restore.disabled || typeof body !== 'string') return;
+        const before = { text: draft.text, revision: draft.revision };
+        if (draft.text.trim() && draft.text !== body && !await confirmAction(`${name} · 恢复默认？`, '默认正文会替换当前编辑框中的自定义内容。这里只修改草稿，点击下方保存设置才会写入文件。请先复制仍需保留的内容。', '替换为默认正文', '保留当前正文')) {
+          restore.focus({ preventScroll: true });
+          return;
+        }
+        if (restore.disabled || draft !== profileDrafts.get(name) || draft.text !== before.text || draft.revision !== before.revision) {
+          feedback(message.id, '正文状态已变化，未替换草稿，请重新操作。', true);
+          return;
+        }
+        draft.text = body;
+        draft.dirty = draft.text !== draft.baseline;
+        feedback(message.id, '已将默认正文填入草稿，修改后点击下方保存设置。');
+        updateControls();
+        input.focus({ preventScroll: true });
+      });
     }
   }
   function renderProfiles() {
     for (const name of profileNames) {
       const source = state.profiles[name];
-      if (!profileDrafts.has(name) && source) profileDrafts.set(name, newDraft(source));
+      const hasBody = typeof source?.text === 'string';
+      if (!profileDrafts.has(name) && hasBody) profileDrafts.set(name, newDraft(source));
       const draft = profileDrafts.get(name);
       const input = $(`profile-${name}-input`);
+      const status = $(`profile-${name}-status`);
+      const restore = $(`profile-${name}-restore`);
       if (!draft) {
         input.disabled = true;
-        $(`profile-${name}-status`).textContent = hasState ? '宿主尚未提供此文件，不能安全编辑。' : '正在读取本地文件…';
-        $(`profile-${name}-save`).disabled = true;
-        $(`profile-${name}-reload`).disabled = !canMutate();
+        status.textContent = hasState ? '未能读取纯正文，已暂停安全编辑。请刷新。' : '正在读取本地正文…';
+        if (restore) restore.disabled = true;
+        $(`profile-${name}-reload`).disabled = !canMutate() || settingsSaving || settingsReceipt?.uncertain;
         continue;
       }
       if (input.value !== draft.text) input.value = draft.text;
-      input.disabled = !source || draft.saving || draft.awaiting || settingsSaving;
-      const status = $(`profile-${name}-status`);
-      status.textContent = draft.conflict ? '版本已变化或文件已移除；草稿仍保留。复制需要的内容后载入最新版合并，不会强制覆盖。'
-        : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存。'
-          : `revision ${draft.revision} · ${draft.awaiting ? '保存成功，等待同步' : draft.dirty ? '有未保存草稿' : '与已读取版本一致'}`;
-      status.classList.toggle('is-error', draft.conflict);
-      $(`profile-${name}-save`).disabled = !canMutate() || !source || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || Boolean(activeRun) || settingsSaving || resetting;
-      $(`profile-${name}-save`).textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存文件';
-      $(`profile-${name}-reload`).disabled = !canMutate() || draft.saving;
+      input.disabled = !hasBody || settingsSaving || restartInFlight || Boolean(settingsReceipt?.uncertain);
+      status.textContent = !hasBody ? '未能读取纯正文，已暂停安全编辑；现有草稿保留。'
+        : draft.conflict ? '冲突 · 草稿保留，请复制需要的内容后载入最新版合并。'
+          : !validRevision(draft.revision) ? '未能核对文件版本，已暂停保存。'
+            : draft.dirty ? '有未保存的更改 · 修改后点击下方保存设置' : '已保存 · 修改后点击下方保存设置';
+      status.classList.toggle('is-error', draft.conflict || !hasBody);
+      if (restore) restore.disabled = input.disabled || !canMutate() || Boolean(activeRun) || resetting || typeof state.profileDefaults[name] !== 'string';
+      $(`profile-${name}-reload`).disabled = !canMutate() || settingsSaving || Boolean(settingsReceipt?.uncertain);
     }
   }
 
@@ -660,13 +726,18 @@
   }
 
   function taskStatus(task) {
-    if (!task || typeof task !== 'object') return '宿主未提供状态';
-    const pieces = [task.running === true ? '执行中' : asText(task.status) || '当前未执行'];
+    if (!task || typeof task !== 'object') return '';
+    const labels = { running: '执行中', error: '运行异常', success: '已完成', completed: '已完成', ok: '已完成', skipped: '已跳过', pending: '等待执行', 'pending-restart': '等待重启' };
+    const pieces = [];
+    if (task.running === true) pieces.push('执行中');
+    else if (labels[task.state]) pieces.push(labels[task.state]);
+    else if (task.state && !['idle', 'disabled'].includes(task.state)) pieces.push(asText(task.state));
     const error = asText(task.error) || asText(task.lastError);
     if (error) pieces.push(`错误：${error}`);
+    if (task.message) pieces.push(asText(task.message));
     if (dateValue(task.lastRunAt)) pieces.push(`最近：${dateLabel(task.lastRunAt)}`);
     if (dateValue(task.nextRunAt)) pieces.push(`下次：${dateLabel(task.nextRunAt)}`);
-    return pieces.join(' · ');
+    return pieces.filter(Boolean).join(' · ');
   }
   function duration(seconds) {
     const value = Math.max(0, Math.round(seconds || 0));
@@ -675,15 +746,27 @@
   function renderServices() {
     $('data-directory').textContent = state.dataDirectory || (hasState ? '宿主未提供数据路径' : '尚未读取');
     $('host-open-hint').textContent = state.hostUrl ? '由本机服务打开实际宿主已认证地址；进入后使用宿主模型齿轮或连接器配置，不在此构造深链。' : '宿主未提供可展示地址；可点击尝试由本机服务打开。若失败，请使用你启动 Harness 时获得的原始地址。';
-    $('background-state').textContent = !hasState ? '尚未读取' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.enabled ? '已启用' : '未启用';
-    $('background-toggle').textContent = pending.has('background') ? '正在处理…' : state.background.enabled ? '停用后台服务…' : '启用后台服务…';
+    $('background-state').textContent = pending.has('background') ? '正在处理请求' : !hasState ? '尚未读取' : offline ? '状态待核对' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.error ? '状态异常' : state.background.enabled ? '已启用（服务返回）' : '未启用';
+    $('background-toggle').textContent = pending.has('background') ? '正在处理…' : state.background.enabled ? '停用' : '启用';
     feedback('background-error', state.background.error, true);
-    $('reflection-status').textContent = `${state.settings.reflectionEnabled ? '自动回顾已开启 · 本地 05:00' : '自动回顾未开启'} · ${taskStatus(state.maintenance.reflection)}`;
-    $('maintenance-status').textContent = `${state.maintenance.running === true ? '宿主调度运行中' : '宿主调度未报告运行'}\n回顾：${taskStatus(state.maintenance.reflection)}\n更新：${taskStatus(state.maintenance.update)}\n记忆候选：${taskStatus(state.maintenance.memory)}`;
+    $('reflection-status').textContent = [state.settings.reflectionEnabled ? '自动回顾已开启 · 本地 05:00' : '自动回顾未开启', taskStatus(state.maintenance.reflection)].filter(Boolean).join(' · ');
+    const results = state.maintenance.running === true ? ['有自动任务正在执行。'] : [];
+    for (const [key, label] of [['reflection', '回顾'], ['update', '更新'], ['memory', '记忆候选']]) {
+      const result = taskStatus(state.maintenance[key]);
+      if (result) results.push(`${label}：${result}`);
+    }
+    $('maintenance-status').textContent = results.join('\n');
+    $('maintenance-details').hidden = !results.length;
     const activity = state.activity;
     $('activity-badge').textContent = !hasState ? '尚未读取' : typeof activity.enabled !== 'boolean' ? '宿主未提供' : activity.enabled ? '已开启' : '已关闭';
     $('activity-enabled-state').textContent = typeof activity.enabled !== 'boolean' ? '未报告' : activity.enabled ? '开' : '关';
-    $('activity-running-state').textContent = offline ? '无法获取最新状态' : typeof activity.running !== 'boolean' ? '未报告' : activity.running ? '正在采集' : '未在采集';
+    const activityLabels = { disabled: '已关闭', starting: '正在准备时长组件', running: '正在采集', stopping: '正在停止时长组件', error: '时长组件运行失败' };
+    const activityStatus = offline ? '无法获取最新状态' : activityLabels[activity.state] || (typeof activity.running !== 'boolean' ? '未报告' : activity.running ? '正在采集' : '未在采集');
+    $('activity-running-state').textContent = activityStatus;
+    $('settings-activity-status').textContent = activity.state === 'error' ? `时长组件异常，开关保存值不受影响。${asText(activity.error)}` : '';
+    $('settings-activity-status').hidden = activity.state !== 'error';
+    $('settings-activity-details').hidden = activity.state !== 'error';
+    $('settings-activity-status').classList.toggle('is-error', activity.state === 'error');
     $('activity-source').textContent = asText(activity.source) || '宿主未提供';
     $('activity-total').textContent = hasState ? duration(state.activitySummary.seconds) : '—';
     feedback('activity-error', asText(activity.error), true);
@@ -699,6 +782,10 @@
   }
 
   function renderRuntime() {
+    $('file-access-root').textContent = state.runtime.fileAccess?.root || '尚未确认 Harness 目录';
+    $('file-access-summary').textContent = state.runtime.fileAccess?.mode === 'denied'
+      ? '对话目前不能读写文件或执行命令。权限上限仅为上述 Harness 目录；目录内的凭据、程序与启动配置也不授权。页面保存和后台服务需单独操作。'
+      : '当前宿主未报告文件权限边界，不据此授予电脑操作权限。';
     const runtime = state.runtime;
     const verification = !hasState ? '尚未读取' : offline ? '无法获取最新状态'
       : runtime.modelVerified === true ? '已验证（宿主报告）' : '待首轮验证';
@@ -739,7 +826,7 @@
       ? '正在读取宿主配置。模型设置由 Harness 管理，打开或保存此设置不会连接模型或发送消息。'
       : offline ? '暂时无法读取最新宿主配置；请重新加载。'
         : runtime.configured === true
-          ? '已继承 Harness 的有效模型路由，不代表网络或凭据已经验证。更换模型请回宿主设置；保存名字本身不调用模型，但开启自动功能后宿主可能按计划调用并收费。'
+          ? '已继承 Harness 的有效模型路由，不代表网络或凭据已经验证。更换模型请回宿主设置；保存名字与正文本身不调用模型，但开启自动功能后宿主可能按计划调用并收费。'
           : '宿主尚未配置有效模型路由，请回 Harness 的模型设置处理。仍可保存名字与偏好，无需复制 Key；自动生成内容需要可用的模型路由。';
     $('welcome-connection').textContent = !hasState || offline
       ? '读取本机状态后再开始对话；不会自动连接模型或发送消息。无需在此复制 Key。'
@@ -831,7 +918,7 @@
   }
 
   function updateControls() {
-    const usable = hasState && !offline && !booting && Boolean(csrfToken);
+    const usable = canMutate();
     const busy = Boolean(activeRun);
     $('send-button').hidden = busy;
     $('cancel-button').hidden = !busy;
@@ -843,7 +930,7 @@
     $('journal-save').textContent = journalSaving ? '保存中…' : '保存记录';
     $('memory-save').disabled = !usable || memorySaving || !$('memory-input').value.trim() || !$('memory-confirm').checked;
     $('memory-save').textContent = memorySaving ? '保存中…' : '确认保存';
-    $('settings-save').disabled = !usable || settingsSaving || busy || resetting;
+    $('settings-save').disabled = !usable || settingsSaving || busy || resetting || Boolean(settingsReceipt?.uncertain) || !hasSettingsDrafts();
     $('settings-save').textContent = settingsSaving ? '保存中…' : '保存设置';
     $('reset-session').disabled = !usable || busy || settingsSaving || resetting;
     $('reset-session').textContent = resetting ? '重置中…' : '重置对话';
@@ -851,12 +938,12 @@
     for (const id of ['memory-input', 'memory-confirm']) $(id).disabled = memorySaving;
     for (const id of ['assistant-name-input', 'allow-context']) $(id).disabled = !usable || settingsSaving || busy || resetting;
     const profileSaving = profileBusy();
-    const configurationBusy = settingsSaving || busy || resetting || profileSaving;
+    const configurationBusy = settingsSaving || busy || resetting || profileSaving || pending.has('background');
     $('send-button').disabled ||= profileSaving;
-    $('settings-save').disabled ||= profileSaving;
+    $('settings-save').disabled ||= profileSaving || pending.has('background');
     $('reset-session').disabled ||= profileSaving;
     for (const id of ['assistant-name-input', ...Object.values(settingFields)]) {
-      $(id).disabled = !usable || configurationBusy || (id !== 'assistant-name-input' && id !== 'allow-context' && !state.features.automation);
+      $(id).disabled = !usable || configurationBusy || Boolean(settingsReceipt?.uncertain) || (id !== 'assistant-name-input' && id !== 'allow-context' && !state.features.automation);
     }
     $('todo-add').disabled = !usable || !state.features.todos || pending.has('todo-add') || !$('todo-input').value.trim() || todoComposing;
     $('todo-add').textContent = pending.has('todo-add') ? '添加中…' : '添加';
@@ -872,7 +959,10 @@
     $('background-toggle').disabled = !usable || !state.background.supported || pending.has('background') || configurationBusy;
     $('profiles-refresh').disabled = booting || busy || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving);
     $('reflections-refresh').disabled = booting || busy || reflectionSaving || pending.has('reflection-run');
-    $('retry-load').disabled = booting || busy;
+    $('retry-load').disabled = booting || busy || restartInFlight;
+    $('settings-open-harness').disabled = !usable || pending.has('open-harness');
+    renderSettingsEffect();
+    renderRestart();
     renderProfiles();
     renderReflections();
     $('reflection-select').disabled ||= reflectionSaving;
@@ -914,18 +1004,336 @@
     notify('已附加日志。只有你按下发送，片段才会提供给模型。');
   }
 
+  function settingsChanges() {
+    if (!settingsBaseline || !settingsDraft) return {};
+    const values = { ...settingsDraft, assistantName: settingsDraft.assistantName.trim() || defaultAssistantName };
+    return Object.fromEntries(Object.entries(values).filter(([field, value]) => value !== settingsBaseline[field]));
+  }
+
+  function hasSettingsDrafts() {
+    return Object.keys(settingsChanges()).length > 0 || [...profileDrafts.values()].some((draft) => draft.dirty);
+  }
+
+  function syncSettingsDraft() {
+    const changes = settingsChanges();
+    if (!settingsDraft) { settingsDraft = {}; settingsBaseline = {}; }
+    for (const field of ['assistantName', ...Object.keys(settingFields)]) {
+      if (Object.hasOwn(changes, field)) continue;
+      settingsDraft[field] = state.settings[field];
+      settingsBaseline[field] = state.settings[field];
+    }
+    // 保留整组设置的草稿版本；轮询不能替 dirty 草稿偷偷换成新基线。
+    if (!Object.keys(changes).length) settingsBaselineRevision = state.settingsRevision;
+    if (!Object.hasOwn(changes, 'assistantName')) settingsNameRevision = state.profiles.soul?.revision;
+    if ($('assistant-name-input').value !== settingsDraft.assistantName) $('assistant-name-input').value = settingsDraft.assistantName;
+    for (const [field, id] of Object.entries(settingFields)) $(id).checked = settingsDraft[field];
+  }
+
+  function reconcileSettingsReceipt() {
+    const receipt = settingsReceipt;
+    if (!receipt?.sent || receipt.settled) return;
+    for (const field of [...receipt.remainingSettings]) {
+      const value = receipt.body.settings[field];
+      const savedFile = field === 'assistantName' ? 'soul' : 'settings';
+      if (state.settings[field] !== value || receipt.accepted && !receipt.accepted.has(savedFile) && receipt.errors[savedFile]) continue;
+      receipt.remainingSettings.delete(field);
+      receipt.saved.add(field);
+      if ((field === 'assistantName' ? settingsDraft[field].trim() || defaultAssistantName : settingsDraft[field]) === value) {
+        settingsDraft[field] = value;
+        settingsBaseline[field] = value;
+      }
+    }
+    for (const name of [...receipt.remainingProfiles]) {
+      const source = state.profiles[name];
+      const submitted = receipt.body.profiles[name];
+      if (source?.text !== submitted.body || !validRevision(source?.revision) || receipt.accepted && !receipt.accepted.has(name) && receipt.errors[name]) continue;
+      receipt.remainingProfiles.delete(name);
+      receipt.saved.add(name);
+      const draft = profileDrafts.get(name);
+      if (draft?.text === submitted.body) Object.assign(draft, newDraft(source));
+    }
+    const remaining = receipt.remainingSettings.size + receipt.remainingProfiles.size;
+    // 不匹配的 GET 不能证明超时 POST 已结束；仅确认逐项匹配的内容，绝不重发。
+    receipt.uncertain = !receipt.accepted && !receipt.rejected && remaining > 0;
+    receipt.settled = !receipt.uncertain;
+    if (receipt.accepted && remaining) {
+      if (receipt.remainingSettings.size && !receipt.errors.settings) receipt.errors.settings = '未确认保存，草稿保留。';
+      for (const name of receipt.remainingProfiles) receipt.errors[name] ||= '未确认保存，草稿保留。';
+    }
+    syncSettingsDraft();
+  }
+
+  function renderSettingsEffect() {
+    const receipt = settingsReceipt;
+    const labels = { assistantName: '名字', allowContext: '附带个人记录', activityEnabled: '应用使用时长', reflectionEnabled: '每日回顾', autoUpdateEnabled: '自动更新', memorySuggestionsEnabled: '记忆候选', settings: '设置', batch: '批量保存' };
+    const parts = [];
+    let isError = false;
+    if (receipt?.sent) {
+      if (receipt.saved.size) parts.push(`已确认保存：${[...receipt.saved].map((item) => labels[item] || item).join('、')}。`);
+      if (receipt.uncertain) {
+        const remaining = [...receipt.remainingSettings, ...receipt.remainingProfiles].map((item) => labels[item] || item);
+        parts.push(`仍待核对：${remaining.join('、')}。草稿保留，请重新检查状态；不会重复提交。`);
+      }
+      for (const [item, message] of Object.entries(receipt.errors)) {
+        parts.push(`${labels[item] || item}：${message}`);
+        isError = true;
+      }
+    }
+    const changes = settingsChanges();
+    const conflict = Object.keys(changes).length > 0 && settingsBaselineRevision !== state.settingsRevision
+      || Object.hasOwn(changes, 'assistantName') && settingsNameRevision !== state.profiles.soul?.revision;
+    if (conflict) { parts.push('设置版本已变化，草稿仍保留；请先复制需要的内容，再载入最新设置合并。'); isError = true; }
+    if (state.settingsEffect.state === 'applying') parts.push('设置正在应用，无需重启。');
+    if (state.settingsEffect.state === 'error') { parts.push(`设置应用异常，不等于保存失败。${state.settingsEffect.message || '请查看运行详情。'}`); isError = true; }
+    feedback('settings-effect', parts.join('\n'), isError);
+    $('settings-effect').dataset.state = receipt?.uncertain ? 'unknown' : isError ? 'error' : 'saved';
+    let needsRecheck = Boolean(receipt?.uncertain || offline || ['applying', 'error'].includes(state.settingsEffect.state));
+    for (const [field, id] of Object.entries(settingFields)) {
+      const input = $(id);
+      const status = $(`${id}-status`);
+      input.checked = settingsDraft?.[field] === true;
+      const dirty = Object.hasOwn(changes, field);
+      const task = state.maintenance[{ reflectionEnabled: 'reflection', autoUpdateEnabled: 'update', memorySuggestionsEnabled: 'memory' }[field]];
+      const error = field === 'activityEnabled' ? state.activity.state === 'error' : state.settings[field] && (task?.error || task?.lastError || task?.state === 'error');
+      const preparing = field === 'activityEnabled' && ['starting', 'stopping'].includes(state.activity.state);
+      let label = state.settings[field] ? '已开启' : '已关闭';
+      if (!hasState) label = '正在读取…';
+      else if (dirty) label = input.checked ? '待开启未保存' : '待关闭未保存';
+      else if (offline) label = '状态待核对';
+      else if (field !== 'allowContext' && !state.features.automation) label = '当前不可用';
+      else if (error) label = '运行异常';
+      else if (preparing) label = '正在准备';
+      status.textContent = label;
+      status.classList.toggle('is-error', Boolean(error && !dirty));
+      status.title = `已保存：${state.settings[field] ? '开启' : '关闭'}${dirty ? '；当前开关为未保存草稿' : ''}`;
+      input.dataset.saved = String(state.settings[field] === true);
+      input.setAttribute('aria-busy', String(settingsSaving || Boolean(receipt?.uncertain && receipt.remainingSettings.has(field))));
+      needsRecheck ||= Boolean(error || preparing);
+    }
+    $('settings-recheck').hidden = !needsRecheck;
+    $('settings-recheck').disabled = settingsSaving || settingsPolling || statusRefreshing || restartInFlight || booting;
+    $('settings-reload').hidden = !conflict;
+    $('settings-reload').disabled = !canMutate() || settingsSaving || Boolean(receipt?.uncertain);
+    $('settings-draft-status').textContent = !hasState ? '正在读取设置' : hasSettingsDrafts() || receipt?.uncertain ? '有未保存的更改' : '所有更改已保存';
+  }
+
+  function switchSettingsTab(name, focus = false) {
+    if (!settingsTabs.includes(name)) return;
+    settingsTab = name;
+    for (const value of settingsTabs) {
+      const selected = value === name;
+      const tab = $(`settings-tab-${value}`);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.classList.toggle('active', selected);
+      tab.tabIndex = selected ? 0 : -1;
+      $(`settings-panel-${value}`).hidden = !selected;
+    }
+    $('settings-content').scrollTop = 0;
+    if (focus) {
+      const tab = $(`settings-tab-${name}`);
+      tab.focus({ preventScroll: true });
+      tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  function scheduleSettingsPoll() {
+    window.clearTimeout(settingsPollTimer);
+    if (!$('settings-dialog').open) return;
+    settingsPollTimer = window.setTimeout(async () => {
+      if (!$('settings-dialog').open) return;
+      if (!document.hidden && !settingsSaving && !restartInFlight && !booting && !activeRun && !profileBusy() && !pending.size && !statusRefreshing) await pollSettings();
+      scheduleSettingsPoll();
+    }, 2000);
+  }
+
+  async function pollSettings() {
+    if (settingsPolling || restartInFlight || settingsSaving || booting) return;
+    settingsPolling = true;
+    updateControls();
+    try { await refreshState({ quiet: true, timeout: 6000 }); }
+    catch { /* 保留草稿；连接提示与保存对账状态会显示读取失败。 */ }
+    finally { settingsPolling = false; updateControls(); }
+  }
+
   function openSettings() {
     if ($('settings-dialog').open) return;
-    syncSettingsName();
-    for (const [field, id] of Object.entries(settingFields)) $(id).checked = state.settings[field];
-    feedback('settings-feedback', activeRun ? (name) => `正在与 ${name} 对话，请停止或等待结束后再修改设置。` : '');
+    settingsReturnFocus = document.activeElement;
     renderRuntime();
     updateControls();
     $('settings-dialog').showModal();
+    switchSettingsTab(settingsTab, true);
+    scheduleSettingsPoll();
   }
 
-  function closeSettings() {
-    $('settings-dialog').close();
+  function settleSettingsClose(choice) {
+    const resolve = settingsCloseResolver;
+    settingsCloseResolver = null;
+    $('settings-close-dialog').close();
+    resolve?.(choice);
+  }
+
+  async function closeSettings() {
+    if (settingsClosing || !$('settings-dialog').open) return;
+    if (settingsSaving) { feedback('settings-feedback', '正在保存或等待确认，请先完成当前操作。'); return; }
+    if (!hasSettingsDrafts() && !settingsReceipt?.uncertain) { $('settings-dialog').close(); return; }
+    settingsClosing = true;
+    const returnFocus = document.activeElement;
+    try {
+      $('settings-close-description').textContent = settingsReceipt?.uncertain
+        ? '上次保存结果仍待核对。“放弃草稿”只放弃本页编辑，不能撤销可能已写入的内容；重新打开设置后仍可核对。取消会继续保留草稿。'
+        : '有未保存的更改。保存设置将提交所有标签中的名字、开关和正文；放弃草稿不会写入，取消则返回继续编辑。';
+      $('settings-close-save').disabled = $('settings-save').disabled;
+      const choice = await new Promise((resolve) => {
+        settingsCloseResolver = resolve;
+        $('settings-close-dialog').showModal();
+        $('settings-close-cancel').focus();
+      });
+      if (choice === 'save') {
+        if (await saveSettings()) $('settings-dialog').close();
+      } else if (choice === 'discard') {
+        settingsDraft = null;
+        settingsBaseline = null;
+        profileDrafts.clear();
+        syncSettingsDraft();
+        for (const name of profileNames) feedback(`profile-${name}-feedback`);
+        feedback('settings-feedback');
+        if (!settingsReceipt?.uncertain) settingsReceipt = null;
+        updateControls();
+        $('settings-dialog').close();
+      }
+    } finally {
+      settingsClosing = false;
+      if ($('settings-dialog').open && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function hasUnsavedDrafts() {
+    return Object.keys(settingsChanges()).length > 0
+      || [...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.dirty || draft.awaiting)
+      || ['chat-input', 'journal-input', 'todo-input', 'memory-input'].some((id) => $(id).value.trim())
+      || attachments.size > 0;
+  }
+
+  function restartBusy() {
+    return Boolean(activeRun) || settingsSaving || resetting || journalSaving || memorySaving || profileBusy()
+      || pending.size > 0 || deleting.size > 0 || [...reflectionDrafts.values()].some((draft) => draft.saving)
+      || state.busy || state.restart.state === 'restarting' || state.settingsEffect.state === 'applying'
+      || ['starting', 'stopping'].includes(state.activity.state)
+      || ['reflection', 'update', 'memory'].some((key) => state.maintenance[key]?.running === true);
+  }
+
+  function restartBlocked() {
+    if (!state.restart.supported) return '当前启动方式不支持在此重启服务，请使用支持重启的启动脚本。';
+    if (restartInFlight || restartConfirming) return '正在处理重启，请勿重复操作。';
+    if (!canMutate()) return '请先恢复本机连接并完成安全校验。';
+    if (settingsReceipt?.uncertain) return '请先核对上次保存结果，再重启。';
+    if (restartBusy()) return '宿主或页面任务忙碌，请等待任务结束后重启。';
+    if (hasUnsavedDrafts()) return '有未保存草稿，请先保存或处理设置、人格、回顾及输入框中的草稿。';
+    return '';
+  }
+
+  function renderRestart() {
+    const restart = state.restart;
+    const pendingRestart = restart.pending || restart.state === 'pending';
+    const label = restartInFlight ? '正在重启' : !hasState ? '尚未读取' : !restart.supported ? '不支持页面重启'
+      : offline ? '状态待核对' : restart.state === 'error' ? '重启异常' : restart.state === 'restarting' ? '正在重启' : pendingRestart ? '待重启' : '可手动重启';
+    $('restart-state').textContent = label;
+    $('restart-state').dataset.state = restartInFlight ? 'restarting' : pendingRestart ? 'pending' : restart.state;
+    $('restart-running-version').textContent = restart.runningVersion || '宿主未提供';
+    $('restart-installed-version').textContent = restart.installedVersion || '宿主未提供';
+    $('restart-description').textContent = [pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启承载 Claudia 的 Harness 服务。', restart.message || restart.reason].filter(Boolean).join('\n');
+    const blocked = restartBlocked();
+    const buttonLabel = restartInFlight || restart.state === 'restarting' ? '正在重启…' : pendingRestart ? '重启以应用更新' : '重启服务';
+    $('restart-hint').textContent = blocked;
+    $('restart-hint').hidden = !blocked;
+    $('restart-button').disabled = Boolean(blocked);
+    $('restart-button').title = blocked || buttonLabel;
+    $('restart-button').setAttribute('aria-label', buttonLabel);
+    $('restart-button').classList.toggle('is-pending', pendingRestart);
+    $('restart-button-label').textContent = buttonLabel;
+  }
+
+  async function restartHost() {
+    if (restartBlocked()) return;
+    restartConfirming = true;
+    updateControls();
+    const approved = await confirmAction('重启承载 Claudia 的 Harness？', '将重启承载 Claudia 的 Harness 服务，期间会短暂断开连接，已有对话与本地记录保留。\n\n存在未保存草稿或忙碌任务时不会发起重启。只提交一次请求，不会因网络超时重复发送。', '确认重启服务', '暂不重启');
+    restartConfirming = false;
+    if (!approved) { updateControls(); return; }
+    const blocked = restartBlocked();
+    if (blocked) { feedback('restart-feedback', blocked, true); updateControls(); return; }
+    restartInFlight = true;
+    window.clearTimeout(settingsPollTimer);
+    ++refreshSequence;
+    updateControls();
+    feedback('restart-feedback', '正在核对宿主空闲状态和当前进程…');
+    const deadline = performance.now() + 45000;
+    const remaining = (limit) => {
+      const ms = Math.min(limit, deadline - performance.now());
+      if (ms <= 0) throw new Error('重启核对已达到 45 秒上限。');
+      return ms;
+    };
+    let sent = false;
+    try {
+      const refreshed = await refreshState({ quiet: true, timeout: remaining(4000) });
+      if (!refreshed || !state.restart.supported || restartBusy() || hasUnsavedDrafts() || settingsReceipt?.uncertain) throw new Error('当前状态不允许重启：请检查重启支持、忙碌任务及草稿。');
+      const before = await api('/api/health', { timeout: remaining(4000) });
+      if (before?.ok !== true || before.busy !== false || !Number.isSafeInteger(before.pid) || before.pid <= 0 || !asText(before.version)) throw new Error('宿主忙碌或未提供可核验的 health PID / version，未发起重启。');
+      const expectedVersion = state.restart.installedVersion || state.restart.runningVersion || before.version;
+      if (restartBusy() || hasUnsavedDrafts()) throw new Error('检测到新任务或草稿，未发起重启。');
+      feedback('restart-feedback', '正在提交一次重启请求…');
+      sent = true;
+      try {
+        const result = await api('/api/restart', { method: 'POST', body: {}, timeout: remaining(5000) });
+        if (result?.restart) state.restart = { ...state.restart, ...result.restart };
+        if (result?.restart?.state === 'error') {
+          const rejected = new Error(result.restart.message || result.restart.reason || '宿主拒绝重启。');
+          rejected.restartRejected = true;
+          throw rejected;
+        }
+      } catch (error) {
+        if (error.status || error.restartRejected) { sent = false; throw error; }
+        // 连接断开可能代表宿主已经重启：只观察 health，不重发 POST。
+      }
+      csrfToken = '';
+      feedback('restart-feedback', '已提交重启请求，正在等待 PID 变化并核对版本；不会重复提交。');
+      let lastCheck = performance.now();
+      let observation = '尚未观察到新的宿主进程';
+      while (performance.now() < deadline) {
+        const wait = Math.min(Math.max(0, 1000 - (performance.now() - lastCheck)), deadline - performance.now());
+        if (wait > 0) await new Promise((resolve) => window.setTimeout(resolve, wait));
+        if (performance.now() >= deadline) break;
+        lastCheck = performance.now();
+        try {
+          const health = await api('/api/health', { timeout: remaining(1000) });
+          if (health?.ok !== true || !Number.isSafeInteger(health.pid) || health.pid <= 0 || health.pid === before.pid) continue;
+          if (health.version !== expectedVersion) { observation = `新进程版本为 ${asText(health.version) || '未知'}，预期 ${expectedVersion}`; continue; }
+          const bootstrapPayload = await api('/api/bootstrap', { timeout: remaining(2000) });
+          if (!asText(bootstrapPayload?.csrfToken).trim()) { observation = '新进程的安全校验尚未就绪'; continue; }
+          csrfToken = bootstrapPayload.csrfToken;
+          const ready = await refreshState({ quiet: true, timeout: remaining(2000) });
+          if (!ready || state.restart.state === 'restarting' || state.restart.pending || state.restart.state === 'pending'
+            || state.restart.state === 'error' || state.restart.runningVersion !== expectedVersion) {
+            observation = 'PID 与 health 版本已变化，运行状态仍待核对';
+            continue;
+          }
+          feedback('restart-feedback', `重启已完成 · PID ${before.pid} → ${health.pid} · 版本 ${health.version}。安全校验和本地状态已重新读取。`);
+          renderAll();
+          return;
+        } catch { /* 启动期间只继续读取；到截止时间即停止，不自动重复重启。 */ }
+      }
+      throw new Error(`45 秒内未能确认重启完成：${observation}。请求不会重发，请检查启动脚本后重新加载状态。`);
+    } catch (error) {
+      feedback('restart-feedback', errorText(error), true);
+      if (sent) {
+        csrfToken = '';
+        showConnectionError(new Error('重启结果尚未确认，请重新加载状态；不要重复提交重启请求。'));
+      }
+    } finally {
+      restartInFlight = false;
+      updateControls();
+      scheduleSettingsPoll();
+    }
   }
 
   function confirmAction(title, description, accept, cancel = '保留') {
@@ -950,7 +1358,7 @@
 
   async function saveJournal(event) {
     event.preventDefault();
-    if (journalSaving || !hasState || offline) return;
+    if (journalSaving || !canMutate()) return;
     const text = $('journal-input').value.trim();
     if (!text) { feedback('journal-feedback', '写下一点内容，再保存吧。', true); return; }
     if (!journalTimeDirty) $('journal-time').value = localDateTime();
@@ -979,7 +1387,7 @@
 
   async function saveMemory(event) {
     event.preventDefault();
-    if (memorySaving || !hasState || offline) return;
+    if (memorySaving || !canMutate()) return;
     const text = $('memory-input').value.trim();
     if (!text || !$('memory-confirm').checked) { feedback('memory-feedback', '请填写内容，并手动确认保存这条记忆。', true); return; }
     memorySaving = true;
@@ -1003,7 +1411,7 @@
 
   async function deleteEntry(kind, id) {
     const key = `${kind}:${id}`;
-    if (deleting.has(key) || !hasState || offline) return;
+    if (deleting.has(key) || !canMutate()) return;
     const isJournal = kind === 'journal';
     const collection = isJournal ? state.journal : state.memories;
     if (!collection.some((entry) => entry.id === id)) return;
@@ -1039,57 +1447,76 @@
   }
 
   async function saveSettings(event) {
-    event.preventDefault();
-    if (settingsSaving || activeRun || resetting || profileBusy() || !hasState || offline || booting || !csrfToken) return;
-    const rawName = $('assistant-name-input').value;
-    const assistantName = rawName.trim() || defaultAssistantName;
-    if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(rawName) || assistantName.length > 40) {
-      feedback('settings-feedback', '名字需为 1–40 字符，不能包含控制字符或换行；留空可恢复默认名字。', true);
-      return;
+    event?.preventDefault();
+    if (settingsSaving || activeRun || resetting || profileBusy() || pending.has('background') || !canMutate() || settingsReceipt?.uncertain) return false;
+    const settings = settingsChanges();
+    const profiles = Object.fromEntries([...profileDrafts].filter(([, draft]) => draft.dirty).map(([name, draft]) => [name, { body: draft.text, revision: draft.revision }]));
+    if (!Object.keys(settings).length && !Object.keys(profiles).length) return true;
+    if (Object.hasOwn(settings, 'assistantName') && (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(settingsDraft.assistantName) || settings.assistantName.length > 40)) {
+      feedback('settings-feedback', '名字最多 40 字符，不能包含控制字符或换行；留空可恢复默认名字。', true);
+      return false;
     }
-    const nameChanged = assistantName !== settingsNameBaseline;
-    if (nameChanged && (profileDrafts.get('soul')?.dirty || settingsNameRevision !== state.profiles.soul?.revision)) {
-      feedback('settings-feedback', 'soul 有未保存草稿或版本已变化。请先处理 soul 草稿；若版本已变化，重新打开设置读取最新名字后再改名。其他设置尚未保存。', true);
-      return;
+    if (!validRevision(settingsBaselineRevision) || !validRevision(settingsNameRevision) || Object.values(profiles).some((profile) => !validRevision(profile.revision))) {
+      feedback('settings-feedback', '缺少保存所需的基线版本，请刷新或载入最新版本；草稿保留。', true);
+      return false;
     }
-    const body = {};
-    if (nameChanged) body.assistantName = assistantName;
-    for (const [field, id] of Object.entries(settingFields)) {
-      if (field === 'allowContext' || state.features.automation) body[field] = $(id).checked;
-    }
+    const body = { settings, profiles, settingsRevision: settingsBaselineRevision, soulRevision: settingsNameRevision };
     const warnings = [];
-    if (body.activityEnabled && !state.settings.activityEnabled) warnings.push('记录应用名称与前台时长，不采集应用内容。');
-    if (body.reflectionEnabled && !state.settings.reflectionEnabled) warnings.push('每天本地 05:00 将过去 24 小时的 Journal / Todo / 可选时长交给模型生成回顾，会产生费用。');
-    if (body.autoUpdateEnabled && !state.settings.autoUpdateEnabled) warnings.push('每天本地 06:00 自动安装稳定版，可能重启宿主；已有数据应受保护。');
-    if (body.memorySuggestionsEnabled && !state.settings.memorySuggestionsEnabled) warnings.push('模型可生成记忆候选并产生费用，但仍需你逐条人工接受。');
+    if (settings.allowContext) warnings.push('以后主动发送对话时，会向 Harness 配置的模型服务自动发送最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加模型费用。关闭不会撤回已发送的内容。');
+    if (settings.activityEnabled) warnings.push('在本机记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文；开启每日回顾后，可用时长会随回顾内容外发。');
+    if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo 和可选应用时长发送给模型生成回顾，会产生费用。');
+    if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启 Harness、短暂断开连接。');
+    if (settings.memorySuggestionsEnabled) warnings.push('允许模型处理内容并生成记忆候选，可能产生费用；不会自动写入长期记忆，仍需你逐条接受。');
+    if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字及 soul / user / system 正文会在后续对话中作为上下文发送给模型服务，可能增加费用，不受“附带个人记录”开关限制。请勿填写密钥或不愿外发的隐私。保存正文和名字本身不调用模型。');
+    const returnFocus = document.activeElement;
     settingsSaving = true;
+    window.clearTimeout(settingsPollTimer);
+    ++refreshSequence;
     updateControls();
     feedback('settings-feedback');
-    let saved = false;
     try {
-      if (warnings.length && !await confirmAction('确认开启所选功能？', `${warnings.join('\n\n')}\n\n关闭浏览器不等于停止宿主。退出宿主后不能保证执行；这里不会安装或启用后台服务。`, '确认开启并保存', '返回检查')) return;
-      // 改名走设置接口写入 soul；未改名时不提交旧名字，避免覆盖文件中的新名字。
-      await api('/api/settings', { method: 'POST', body });
-      saved = true;
-      const refreshed = await refreshState();
-      if (!refreshed) {
-        feedback('settings-feedback', '设置已保存，正在同步最新状态；如名字未更新，请重新加载查看。');
-        return;
+      if (warnings.length && !await confirmAction('保存设置前确认外发与费用', `${warnings.join('\n\n')}\n\n本次统一保存全部已修改的名字、开关和正文；不会启停系统后台服务或执行手动重启。`, '确认保存设置', '取消')) return false;
+      if (!canMutate()) { feedback('settings-feedback', '连接状态已变化，未提交更改；草稿保留。', true); return false; }
+      const receipt = settingsReceipt = {
+        body, sent: false, saved: new Set(), errors: {}, accepted: null, rejected: false, uncertain: true, settled: false,
+        remainingSettings: new Set(Object.keys(settings)), remainingProfiles: new Set(Object.keys(profiles))
+      };
+      updateControls();
+      try {
+        const result = await api('/api/settings/batch', { method: 'POST', body });
+        if (!Array.isArray(result?.saved) || !result.errors || !result.settings || !result.profiles || !validRevision(result.settingsRevision)) throw new Error('保存回执不完整，需要读取状态核对。');
+        receipt.accepted = new Set(result.saved);
+        receipt.errors = { ...result.errors };
+        receipt.sent = true;
+        applySettingsSnapshot(result);
+        if (result.settingsEffect) state.settingsEffect = result.settingsEffect;
+        if (result.restart) state.restart = { ...state.restart, ...result.restart };
+      } catch (error) {
+        receipt.sent = true;
+        // 契约保证 400/409 全不写；其他失败（包括 5xx）均先只读对账。
+        if ([400, 409].includes(error.status)) {
+          receipt.rejected = true;
+          receipt.accepted = new Set();
+          receipt.errors.batch = `${errorText(error)} 本次全部未写入，草稿保留。`;
+          receipt.uncertain = false;
+          receipt.settled = true;
+        } else feedback('settings-feedback', `${errorText(error)} 正在逐项核对，不会重发请求。`, true);
       }
-      syncSettingsName();
-      for (const [field, id] of Object.entries(settingFields)) $(id).checked = state.settings[field];
-      feedback('settings-feedback', (name) => `${name} 的设置已保存，soul 已重新读取。对话与本地记录均保留；开启的自动功能将在宿主运行时执行，模型调用可能收费。`);
-      notify((name) => `已保存 ${name} 的设置。`);
-    } catch (error) {
-      feedback('settings-feedback', saved ? '设置已保存，但状态刷新失败。请重新加载查看，不必重复保存。' : errorText(error), true);
+      try { await refreshState({ timeout: 6000 }); }
+      catch { /* 使用有效回执确认已保存项；其余草稿和原始版本保留。 */ }
+      if (receipt.settled && !receipt.remainingSettings.size && !receipt.remainingProfiles.size && !Object.keys(receipt.errors).length) feedback('settings-feedback');
+      return receipt.settled && !receipt.remainingSettings.size && !receipt.remainingProfiles.size && !Object.keys(receipt.errors).length && !hasSettingsDrafts();
     } finally {
       settingsSaving = false;
+      renderIdentity();
       updateControls();
+      if ($('settings-dialog').open && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus({ preventScroll: true });
+      scheduleSettingsPoll();
     }
   }
 
   async function resetSession() {
-    if (activeRun || resetting || settingsSaving || profileBusy() || !hasState || offline) return;
+    if (activeRun || resetting || settingsSaving || profileBusy() || !canMutate()) return;
     const approved = await confirmAction('重新开始这段对话？', '将创建新的模型会话，并清空当前聊天视图。Journal、手动记忆和已有本地日志会保留。\n\n这不会撤回此前已经发送给模型的内容。', '确认重置', '继续当前对话');
     if (!approved) return;
     resetting = true;
@@ -1179,21 +1606,20 @@
     void mutate('background', '/api/background', { enabled }, 'background-feedback', enabled ? '启用请求已完成，以上方宿主返回的后台状态为准。' : '停用请求已完成，以上方宿主返回的后台状态为准。', {
       timeout: 120000,
       confirm: enabled
-        ? ['安装并启用 macOS 后台服务？', '这会在系统中安装并启用 LaunchAgent，让 Harness 可在关闭浏览器后继续运行。已经开启的回顾可能调用付费模型，自动更新可能重启宿主。\n\n不会自动替你开启四个功能开关；关机或休眠期间不保证定时执行。仅在你确认后安装。', '确认安装并启用', '暂不启用']
-        : ['停用后台服务？', '这会停用系统 LaunchAgent，可能中断当前宿主连接。定时任务需要宿主保持运行，停用后不能保证执行。已有记录会保留。', '确认停用', '保持启用']
+        ? ['启用 macOS 登录后台服务？', '确认后将请求安装并启用 macOS 系统后台服务，用于脱离终端运行 Harness，并在登录后自动启动。关闭浏览器本来就不会关闭正在运行的服务；启用结果以上方返回状态为准，不代表当前进程已被接管。\n\n此操作不改变其他功能开关。已开启的回顾和记忆候选可能调用付费模型，自动更新可能重启宿主；关机或休眠期间不保证执行。', '确认启用系统服务', '暂不启用']
+        : ['停用登录后台服务？', '将请求停用 macOS 系统后台服务和登录自启，可能中断当前 Harness 连接。停用结果以返回状态为准，已有记录保留。\n\n定时任务仍需 Harness 运行；关闭浏览器与停用服务不是同一操作。', '确认停用', '保持启用']
     });
   }
   function openHost() {
-    void mutate('open-harness', '/api/open-harness', {}, 'host-open-feedback', '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
+    void mutate('open-harness', '/api/open-harness', {}, $('settings-dialog').open ? 'settings-host-feedback' : 'host-open-feedback', '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
   }
 
   async function saveRevision(kind, id) {
-    const isProfile = kind === 'profile';
-    const draft = (isProfile ? profileDrafts : reflectionDrafts).get(id);
-    const feedbackId = isProfile ? `profile-${id}-feedback` : 'reflection-feedback';
+    if (kind === 'profile') return saveSettings();
+    const draft = reflectionDrafts.get(id);
+    const feedbackId = 'reflection-feedback';
     if (!canMutate() || !draft || draft.saving || draft.awaiting || draft.conflict || !draft.dirty || !validRevision(draft.revision)) return;
-    if (isProfile && (activeRun || settingsSaving || resetting)) return;
-    if (!isProfile && !draft.text.trim()) return;
+    if (!draft.text.trim()) return;
     draft.saving = true;
     updateControls();
     renderProfiles();
@@ -1201,19 +1627,17 @@
     feedback(feedbackId);
     let saved = false;
     try {
-      const path = isProfile ? `/api/profiles/${id}` : `/api/reflections/${encodeURIComponent(id)}`;
-      await api(path, { method: 'POST', body: { text: draft.text, revision: draft.revision } });
+      await api(`/api/reflections/${encodeURIComponent(id)}`, { method: 'POST', body: { text: draft.text, revision: draft.revision } });
       saved = true;
       draft.awaiting = true;
       await refreshState();
-      if (isProfile && id === 'soul' && $('assistant-name-input').value === settingsNameBaseline) syncSettingsName();
       feedback(feedbackId, '已保存，并重新读取本地版本；没有调用模型。');
     } catch (error) {
       if (!saved && (error.status === 409 || error.status === 412)) {
         draft.conflict = true;
         try { await refreshState(); } catch { /* 保留草稿及原 revision，不自动重试保存。 */ }
       }
-      feedback(feedbackId, saved ? '文件已保存，但新 revision 尚未同步。草稿已保留，请刷新版本，不要重复保存。' : `${errorText(error)} 草稿已保留。`, true);
+      feedback(feedbackId, saved ? '已保存，但最新版本尚未同步。草稿已保留，请刷新，不要重复保存。' : `${errorText(error)} 草稿已保留。`, true);
     } finally {
       draft.saving = false;
       renderProfiles();
@@ -1226,26 +1650,37 @@
     const drafts = isProfile ? profileDrafts : reflectionDrafts;
     const draft = drafts.get(id);
     const feedbackId = isProfile ? `profile-${id}-feedback` : 'reflection-feedback';
-    if (draft?.saving) return;
+    if (draft?.saving || isProfile && (settingsSaving || settingsReceipt?.uncertain)) return;
     if (draft?.dirty && !draft.awaiting && !await confirmAction('用最新版本替换草稿？', '只替换这个编辑框的未保存草稿，不改动服务器文件。请先复制仍需保留的内容。', '载入最新版本', '保留草稿')) return;
     try {
       const refreshed = await refreshState();
       if (!refreshed) throw new Error('仍在同步状态，请稍后再载入最新版本。');
       const entry = isProfile ? state.profiles[id] : state.reflections.find((item) => item.id === id);
-      if (!entry) throw new Error('宿主没有返回此文件；草稿未清除。');
+      if (!entry || isProfile && typeof entry.text !== 'string') throw new Error('未能读取可编辑正文；草稿未清除。');
       const next = newDraft(entry);
       next.editing = draft?.editing || false;
       drafts.set(id, next);
+      if (isProfile && id === 'soul') {
+        // 显式载入 soul 后采用新 revision，但不抹掉名字输入框中的草稿。
+        settingsNameRevision = entry.revision;
+      }
       feedback(feedbackId, '已载入最新版本，可以在此基础上编辑保存。');
       renderProfiles();
       renderReflections();
       updateControls();
     } catch (error) { feedback(feedbackId, errorText(error), true); }
   }
-  function syncSettingsName() {
-    settingsNameBaseline = displayName();
-    settingsNameRevision = state.profiles.soul?.revision;
-    $('assistant-name-input').value = displayName();
+  async function reloadSettings() {
+    if (settingsSaving || settingsReceipt?.uncertain || !canMutate()) return;
+    if (!await confirmAction('载入最新设置？', '将替换未保存的名字和开关草稿；三个正文草稿仍保留。请先复制需要保留的名字。', '载入最新设置', '保留草稿')) return;
+    try {
+      if (!await refreshState()) return;
+      settingsDraft = null;
+      settingsBaseline = null;
+      syncSettingsDraft();
+      feedback('settings-feedback', '已载入最新名字和开关，可以重新修改。正文草稿保持不变。');
+      updateControls();
+    } catch (error) { feedback('settings-feedback', errorText(error), true); }
   }
   function switchJournalView(name, focus = false) {
     if (!['notes', 'reflections'].includes(name)) return;
@@ -1262,8 +1697,8 @@
     if (name === 'reflections') renderReflections();
   }
   async function refreshStatus(manual = false, feedbackId = 'profiles-feedback') {
-    if (statusRefreshing || booting || activeRun || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving) || pending.size || [...reflectionDrafts.values()].some((draft) => draft.saving)) return;
-    if (!manual && (document.hidden || !hasState || offline)) return;
+    if (statusRefreshing || settingsPolling || restartInFlight || booting || activeRun || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving) || pending.size || [...reflectionDrafts.values()].some((draft) => draft.saving)) return;
+    if (!manual && (document.hidden || !hasState || offline || $('settings-dialog').open)) return;
     statusRefreshing = true;
     try {
       if (!csrfToken) await bootstrap();
@@ -1369,7 +1804,7 @@
 
   async function sendChat(event) {
     event.preventDefault();
-    if (activeRun || resetting || settingsSaving || profileBusy()) return;
+    if (activeRun || resetting || settingsSaving || profileBusy() || restartInFlight || state.restart.state === 'restarting') return;
     if (!hasState || offline || !csrfToken) { feedback('chat-feedback', '请先连接本机服务，读取状态后再发送。', true); return; }
     const text = $('chat-input').value.trim();
     if (!text) return;
@@ -1496,6 +1931,42 @@
   $('capabilities-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', closeSettings);
   $('settings-form').addEventListener('submit', saveSettings);
+  $('settings-dialog').addEventListener('cancel', (event) => { event.preventDefault(); closeSettings(); });
+  $('settings-dialog').addEventListener('close', () => {
+    window.clearTimeout(settingsPollTimer);
+    if (settingsReturnFocus?.isConnected && !$('confirm-dialog').open) settingsReturnFocus.focus({ preventScroll: true });
+  });
+  document.querySelectorAll('[data-settings-tab]').forEach((tab) => {
+    tab.addEventListener('click', () => switchSettingsTab(tab.dataset.settingsTab, true));
+    tab.addEventListener('keydown', (event) => {
+      const index = settingsTabs.indexOf(settingsTab);
+      const next = event.key === 'ArrowRight' ? settingsTabs[(index + 1) % settingsTabs.length]
+        : event.key === 'ArrowLeft' ? settingsTabs[(index + settingsTabs.length - 1) % settingsTabs.length]
+          : event.key === 'Home' ? settingsTabs[0] : event.key === 'End' ? settingsTabs[settingsTabs.length - 1] : '';
+      if (next) { event.preventDefault(); switchSettingsTab(next, true); }
+    });
+  });
+  $('assistant-name-input').addEventListener('input', () => {
+    if (settingsDraft) settingsDraft.assistantName = $('assistant-name-input').value;
+    feedback('settings-feedback');
+    updateControls();
+  });
+  for (const [field, id] of Object.entries(settingFields)) {
+    $(id).addEventListener('change', () => {
+      if (settingsDraft) settingsDraft[field] = $(id).checked;
+      feedback('settings-feedback');
+      updateControls();
+    });
+  }
+  $('settings-reload').addEventListener('click', () => void reloadSettings());
+  for (const choice of ['save', 'discard', 'cancel']) $('settings-close-' + choice).addEventListener('click', () => settleSettingsClose(choice));
+  $('settings-close-dialog').addEventListener('cancel', (event) => { event.preventDefault(); settleSettingsClose('cancel'); });
+  $('settings-close-dialog').addEventListener('close', () => {
+    if (settingsCloseResolver) { const resolve = settingsCloseResolver; settingsCloseResolver = null; resolve('cancel'); }
+  });
+  $('settings-recheck').addEventListener('click', async () => { await pollSettings(); scheduleSettingsPoll(); });
+  $('settings-open-harness').addEventListener('click', openHost);
+  $('restart-button').addEventListener('click', () => void restartHost());
   $('reset-session').addEventListener('click', resetSession);
   $('confirm-accept').addEventListener('click', () => settleConfirm(true));
   $('confirm-cancel').addEventListener('click', () => settleConfirm(false));
@@ -1588,7 +2059,7 @@
   $('open-harness').addEventListener('click', openHost);
   $('background-toggle').addEventListener('click', toggleBackground);
   window.addEventListener('beforeunload', (event) => {
-    if (![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.dirty || draft.saving || draft.awaiting)) return;
+    if (!hasUnsavedDrafts() && !settingsSaving && !settingsReceipt?.uncertain && !restartInFlight && ![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.saving || draft.awaiting)) return;
     event.preventDefault();
     event.returnValue = '';
   });

@@ -137,21 +137,24 @@ const mdCell = value => value.replace(/[&<>|`\\]/g, char => `&#${char.codePointA
 export class ActivityTracker {
   constructor(dataDir) {
     this.dataDir = resolve(dataDir); this.files = new PrivateFiles(dataDir, 'activity'); this.runtimeFiles = new PrivateFiles(dataDir, '.runtime');
-    this.enabled = false; this.running = false; this.error = ''; this.closed = false;
+    this.enabled = false; this.running = false; this.error = ''; this.closed = false; this.state='disabled'; this.generation=0;
     this.child = null; this.queue = Promise.resolve(); this.stopTask = null; this.watchdog = null;
     this.lastEnd = 0; this.daily = null;
   }
-  status() { return { enabled: this.enabled, running: this.running, error: this.error, source: SOURCE }; }
+  status() { return { enabled: this.enabled, running: this.running, state:this.error?'error':this.running?'running':this.state, error: this.error, source: SOURCE }; }
   setEnabled(value) {
     if (typeof value !== 'boolean') return Promise.reject(new TypeError('enabled 必须为布尔值'));
     if (this.closed && value) return Promise.reject(new Error('ActivityTracker 已关闭'));
-    this.enabled = value;
+    this.enabled = value;this.error='';const generation=++this.generation;
+    this.state=value?(this.running?'running':'starting'):'stopping';
     this.queue = this.queue.catch(() => {}).then(async () => {
+      if(generation!==this.generation)return this.status();
       if (!this.enabled || this.closed) await this._stop();
       else if (!this.running) {
         await this._stop();
         try { await this._start(); } catch (error) { this.error = error.message; this.running = false; await this._stop(); }
       }
+      if(generation===this.generation)this.state=this.error?'error':this.running?'running':this.enabled?'starting':'disabled';
       return this.status();
     });
     return this.queue;
@@ -252,7 +255,7 @@ export class ActivityTracker {
             const frame = JSON.parse(line); this.lastFrame = Date.now();
             if (frame.type === 'ready' && frame.protocol === 1 && !settled) { this.running = true; finish(); }
             else if (frame.type === 'heartbeat' && this.running) { /* 不将 heartbeat 间隔补成应用时长。 */ }
-            else if (frame.type === 'segment' && this.running) this._record(frame.event);
+            else if (frame.type === 'segment' && this.running) { if(this.enabled&&!this.closed)this._record(frame.event); }
             else if (frame.type === 'error') throw new Error(frame.code === 'idle-unavailable' ? 'idle 时长 API 不可用；未请求权限，采集已停止' : frame.code === 'locked' ? '已有前台时长采集进程运行' : '本地采集器不可用，采集已停止');
             else throw new Error('前台时长协议无效');
           } catch (error) { fail(error.message); break; }

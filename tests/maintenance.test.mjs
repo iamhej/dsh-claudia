@@ -277,7 +277,7 @@ test('不接受 draft、prerelease、非严格 tag、缺少或伪造 digest', as
 });
 test('不是新版本只查询 API，不下载', async t => {
   const current = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-  const f = fixture(t, { autoUpdateEnabled: true }), urls = network(t, release({ tag_name: `v${current}` })), m = f.create();
+  const f = fixture(t, { autoUpdateEnabled: true }), urls = network(t, release({ tag_name: `v${current.includes('-') ? '0.0.0' : current}` })), m = f.create();
   await m.tick(now); assert.equal(m.status().update.state, 'up-to-date'); assert.deepEqual(urls, [API]);
 });
 test('拒绝任意重定向、凭据、http、跨仓库 asset 和 API 重定向', async t => {
@@ -331,7 +331,7 @@ test('更新失败有限重试，次日开启只补最近 06:00 一期', async t
 test('Activity 默认关闭、空汇总不创建目录、不产生子进程', async t => {
   const f = fixture(t), tracker = new ActivityTracker(f.dir);
   tracker._spawn = () => { throw new Error('禁止真实采集'); };
-  assert.deepEqual(tracker.status(), { enabled: false, running: false, error: '', source: 'local-foreground' });
+  assert.deepEqual(tracker.status(), { enabled: false, running: false, state: 'disabled', error: '', source: 'local-foreground' });
   assert.deepEqual(tracker.summary(window.start, window.end), { apps: [], seconds: 0, coverageSeconds: 0, source: 'local-foreground' });
   await tracker.setEnabled(false); await tracker.close(); assert.deepEqual(readdirSync(f.dir), []);
 });

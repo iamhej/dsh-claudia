@@ -13,7 +13,7 @@ import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store, makeContext } from '../store.mjs';
-import { BOOLEAN_SETTINGS, MAX_RECORD_BYTES, MAX_PROFILE_CHARS } from '../records.mjs';
+import { BOOLEAN_SETTINGS, MAX_RECORD_BYTES, MAX_PROFILE_CHARS, PROFILE_DEFAULTS } from '../records.mjs';
 
 const date = '2026-09-15T10:00:00.000Z';
 const later = '2026-09-16T10:00:00.000Z';
@@ -83,13 +83,20 @@ function seedLegacy(f) {
 test('初始化固定 MD 与私有权限，配置默认不共享上下文', t => {
   const f = fixture(t);
   for (const name of ['todo.md', 'memory.md', 'soul.md', 'user.md', 'system.md', 'settings.md']) {
-    assert.match(f.read(name), /<!-- dsh-claudia/);
+    if (['soul.md', 'user.md', 'system.md'].includes(name)) assert.doesNotMatch(f.read(name), /<!-- dsh-claudia/);
+    else assert.match(f.read(name), /<!-- dsh-claudia/);
     assert.equal(statSync(join(f.dir, name)).mode & 0o777, 0o600);
   }
   for (const name of ['', 'journal', 'reflections', 'conversations', 'migration']) assert.equal(statSync(join(f.dir, name)).mode & 0o777, 0o700);
   assert.equal(statSync(f.file).mode & 0o777, 0o600);
   for (const suffix of ['-wal', '-shm']) if (existsSync(f.file + suffix)) assert.equal(statSync(f.file + suffix).mode & 0o777, 0o600);
   assert.equal(f.store.get('assistantName'), 'Claudia');
+  for (const name of ['soul', 'user', 'system']) {
+    const body = name === 'user' ? '' : PROFILE_DEFAULTS[name];
+    const text = (name === 'soul' ? '---\nassistantName: "Claudia"\n---\n' : '') + body;
+    assert.deepEqual(f.store.profiles()[name], { text, revision: digest(text), body });
+    assert.equal(f.read(`${name}.md`), text);
+  }
   for (const key of BOOLEAN_SETTINGS) assert.equal(f.store.get(key), false);
   assert.equal(f.store.get('unknown', 'fallback'), 'fallback');
 });
@@ -161,7 +168,7 @@ test('profiles 返回完整文档与 SHA-256，显式 revision 防止覆盖外�
     const external = previous.text + '\n外部编辑\n';
     f.write(`${name}.md`, external);
     const read = f.store.profiles()[name];
-    assert.deepEqual(read, { text: external, revision: digest(external) });
+    assert.deepEqual(read, { text: external, revision: digest(external), body: (name === 'user' ? '' : PROFILE_DEFAULTS[name]) + '\n外部编辑\n' });
     assert.throws(() => f.store.saveProfile(name, previous.text, previous.revision), isStatus(409));
     assert.throws(() => f.store.saveProfile(name, previous.text), isStatus(409));
     const text = external + '追加 Unicode：你好\n\n';
@@ -286,7 +293,8 @@ test('0.2.1 SQLite 首次完整迁移，保留全部 session 副本及 runtime �
   assert.deepEqual(f.store.journal(), []);
   assert.deepEqual(f.store.memories(), []);
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM journal').get().n, 1);
-  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM record_migrations').get().n, 1);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM record_migrations').get().n, 2);
+  assert.deepEqual(f.store.db.prepare('SELECT version FROM record_migrations ORDER BY version').all().map(row => row.version), ['markdown-v1', 'profile-defaults-v1']);
 });
 
 test('迁移保留用户业务 MD，会话冲突原文与旧业务内容另存 migration', t => {
@@ -332,7 +340,7 @@ test('手动删除已有 MD 后重启不从 SQLite 或默认值自动复活', t 
   unlinkSync(join(f.dir, 'user.md'));
   f.restart();
   assert.deepEqual(f.store.memories(), []);
-  assert.deepEqual(f.store.profiles().user, { text: '', revision: null });
+  assert.deepEqual(f.store.profiles().user, { text: '', revision: null, body: '' });
   assert.equal(existsSync(join(f.dir, 'memory.md')), false);
   assert.equal(existsSync(join(f.dir, 'user.md')), false);
   assert.deepEqual(f.store.saveProfile('user', '用户显式重新创建', null), { text: '用户显式重新创建', revision: digest('用户显式重新创建') });
