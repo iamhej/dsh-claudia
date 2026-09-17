@@ -655,6 +655,19 @@ test('launchctl 失败不报告成功；非 macOS 明确不支持', async t => {
   assert.equal(unavailable.status().supported, false); await assert.rejects(unavailable.setEnabled(true), /仅支持 macOS/);
   const service = new BackgroundService(f.options, { platform: 'darwin', userHome: join(f.dir, 'user'), query: () => ({ status: 113, stderr: 'Could not find service' }), run: async () => { throw new Error('模拟失败'); } });
   await assert.rejects(service.setEnabled(true), /注册失败/); assert.equal(service.status().enabled, false);
-  // 注册失败遗留的自有 plist 也必须能通过关闭清理，避免下次登录意外开启。
+  // 注册失败必须当场清除刚写入的 plist：launchctl 不认识它，status 照样报关闭，
+  // 但 RunAtLoad 会在下次登录把后台悄悄拉起来，违反“不偷偷注册”的约定。
+  assert.equal(existsSync(service.plist), false);
+  // 再次关闭仍是安全的空操作，不因文件已不存在而报错。
   await service.setEnabled(false); assert.equal(existsSync(service.plist), false);
+});
+
+test('bootstrap 成功但 launchctl 未确认时同样回滚 plist', async t => {
+  const f = fixture(t);
+  let bootstrapped = false;
+  // run 不抛错，但 query 始终报告未找到服务：属于“写了文件却没真正注册”的情况。
+  const service = new BackgroundService(f.options, { platform: 'darwin', userHome: join(f.dir, 'user'), uid: 501, query: () => ({ status: 113, stderr: 'Could not find service' }), run: async args => { bootstrapped = args[0] === 'bootstrap'; } });
+  await assert.rejects(service.setEnabled(true), /未确认注册/);
+  assert.equal(bootstrapped, true);
+  assert.equal(existsSync(service.plist), false);
 });

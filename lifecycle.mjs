@@ -6,6 +6,7 @@ import { gunzipSync } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { noopLogger } from './logger.mjs';
 
 const exec = promisify(execFile);
 const MAX = 64 * 1024 * 1024;
@@ -321,7 +322,7 @@ export function rollbackInstall({ dataDir, home = defaultHome(), profile = 'web'
   return { rollbackComplete: true, installationUncertain: false, oldVersion, backupDir };
 }
 
-export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, profile = 'web', pnpmPath, home = defaultHome() }) {
+export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, profile = 'web', pnpmPath, home = defaultHome(), logger = noopLogger }) {
   // 构造不创建目录、不探测进程、更不会安装；仅调用回调才产生副作用。
   dataDir = absolutePath(dataDir); home = absolutePath(home); profile = profileName(profile);
   let running = false;
@@ -386,8 +387,11 @@ export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, p
         if (hash(readSafe(join(installed.dir, file))) !== hash(content)) fail('已安装文件与校验过的 tgz 不一致');
       }
       writePrivate(restartPath, JSON.stringify({ version, verifiedVersion: version, oldVersion: old.manifest.version, backupDir: backup, phase: 'pending', id: randomUUID(), requestedAt: new Date().toISOString() }));
+      logger.info('update.install.pendingRestart', { version, oldVersion: old.manifest.version });
       return { state: 'pending-restart', installed: true, applied: false, pendingRestart: true, version, verifiedVersion: version, oldVersion: old.manifest.version, backupDir: backup };
     } catch (error) {
+      // 区分“未开始写入”“已完整回滚”“状态不确定”三种失败，日志里也要能分辨。
+      logger.warn('update.install.fail', { version, started: attempted, error });
       if (complete && attempted) {
         try {
           rollbackInstall({ dataDir, home, profile, backupDir: backup, oldVersion: old.manifest.version });
@@ -409,8 +413,8 @@ export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, p
 
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 export class BackgroundService {
-  constructor({ dataDir, home = defaultHome(), dshBin, nodeBin = process.execPath, profile = 'web', hostPort = 3088, pluginPort = 4317, pnpmPath }, { platform = process.platform, userHome = homedir(), uid = process.getuid?.() ?? 0, query = args => spawnSync('/bin/launchctl', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024 }), run = args => exec('/bin/launchctl', args, { timeout: 15000, maxBuffer: 65536 }) } = {}) {
-    this.platform = platform; this.query = query; this.run = run;
+  constructor({ dataDir, home = defaultHome(), dshBin, nodeBin = process.execPath, profile = 'web', hostPort = 3088, pluginPort = 4317, pnpmPath }, { platform = process.platform, userHome = homedir(), uid = process.getuid?.() ?? 0, logger = noopLogger, query = args => spawnSync('/bin/launchctl', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024 }), run = args => exec('/bin/launchctl', args, { timeout: 15000, maxBuffer: 65536 }) } = {}) {
+    this.platform = platform; this.query = query; this.run = run; this.logger = logger;
     this.options = { dataDir: absolutePath(dataDir), home: absolutePath(home), dshBin, nodeBin, profile: profileName(profile), hostPort, pluginPort, pnpmPath };
     this.label = `com.iamhej.dsh-claudia.${homeHash(home)}`;
     this.domain = `gui/${uid}`;
@@ -451,7 +455,7 @@ export class BackgroundService {
         privateDirectory(dirname(this.plist));
         writePrivate(this.plist, `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>Label</key><string>${xml(this.label)}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>AbandonProcessGroup</key><true/><key>ExitTimeOut</key><integer>30</integer><key>WorkingDirectory</key><string>${xml(o.home)}</string><key>EnvironmentVariables</key><dict><key>DSH_HOME</key><string>${xml(o.home)}</string><key>PATH</key><string>${xml([dirname(node), ...(pnpm ? [dirname(pnpm)] : []), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin'].join(delimiter))}</string></dict></dict></plist>\n`);
         try { await this.run(['bootstrap', this.domain, this.plist]); }
-        catch { fail('LaunchAgent 注册失败；不能将文件存在视为启用成功'); }
+        catch { this.removePlist(); fail('LaunchAgent 注册失败；已清除刚写入的配置，不留下会在下次登录自启的残留'); }
       } else {
         // 不发信号给健康检查返回的 PID；前台宿主不是该 label 的子进程。
         if (before.enabled) {
@@ -462,8 +466,21 @@ export class BackgroundService {
         if (existsSync(this.plist)) unlinkSync(this.plist);
       }
       const after = this.status();
+      // 注册未被 launchctl 确认时清除刚写入的 plist，避免留下会在下次登录 RunAtLoad 自启的孤儿配置；
+      // 状态查询本身失败属于不确定，保留文件并如实报告，不假装已完全回滚。
+      if (enabled && !after.enabled && !after.error) fail(this.removePlist() ? 'launchctl 未确认注册；已清除刚写入的配置' : 'launchctl 未确认注册，且残留配置清除失败；请手动检查 ~/Library/LaunchAgents');
       if (after.error || after.enabled !== enabled) fail('launchctl 操作尚未完成，真实状态与请求不一致');
+      // 后台常驻是最容易“以为开了其实没开”的地方，成败都留痕。
+      this.logger.info(enabled ? 'background.enable' : 'background.disable', { label: this.label, enabled: after.enabled });
       return { ...after, ...(enabled ? { message: '已启用后台 supervisor；已有同 home 前台宿主时等待其退出后接管，不重复启动' } : {}) };
+    } catch (error) {
+      this.logger.warn(enabled ? 'background.enable.fail' : 'background.disable.fail', { label: this.label, error });
+      throw error;
     } finally { this.changing = false; }
+  }
+  // 仅用于回滚刚写入的 plist；吞掉异常并返回是否确实清除，让调用方区分完全回滚与不确定失败。
+  removePlist() {
+    try { safePath(this.plist, { missing: true }); if (existsSync(this.plist)) unlinkSync(this.plist); return !existsSync(this.plist); }
+    catch { return false; }
   }
 }

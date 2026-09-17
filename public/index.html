@@ -293,6 +293,17 @@
           <p id="restart-hint" class="field-help"></p>
           <p id="restart-feedback" class="form-feedback" role="status" hidden></p>
         </section>
+        <section class="settings-section" aria-labelledby="logs-title">
+          <div class="section-heading"><h3 id="logs-title">运行日志</h3><span id="logs-state" class="quiet-tag">尚未读取</span></div>
+          <p class="field-help">只记录启动、退出、定时任务、后台常驻、采集开关和错误等事件。不写入对话、Journal、待办、记忆、设定正文，也不写入 API key。</p>
+          <p id="logs-path" class="data-path">尚未读取</p>
+          <div class="restart-row">
+            <p id="logs-summary" class="field-help" role="status">正在读取日志状态…</p>
+            <div class="logs-actions"><button id="logs-refresh" class="text-button" type="button" disabled>刷新</button><button id="open-logs" class="secondary-button" type="button" disabled>打开日志文件夹</button></div>
+          </div>
+          <pre id="logs-view" class="logs-view" tabindex="0" aria-labelledby="logs-title">展开本页后点击“刷新”读取最近事件。</pre>
+          <p id="logs-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
         <div class="reset-section"><div><h3>重新开始模型上下文</h3><p>清空当前对话视图，保留本地记录与记忆。不会撤回已发送的内容。</p></div><button id="reset-session" class="text-button danger-text" type="button" disabled>重置对话</button></div>
       </section>
     </div>

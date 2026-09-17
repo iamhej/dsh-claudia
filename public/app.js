@@ -15,7 +15,8 @@
     settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: '',
     dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
     background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
-    restart: { supported: false, pending: false, state: 'idle' }, busy: false
+    restart: { supported: false, pending: false, state: 'idle' }, busy: false,
+    logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' }, logLines: [], logsLoaded: false
   };
   const pending = new Set();
   const profileDrafts = new Map();
@@ -273,7 +274,7 @@
     state.features = {
       todos: Array.isArray(payload.todos), reflections: Array.isArray(payload.reflections),
       memoryCandidates: Array.isArray(payload.memoryCandidates), automation: Boolean(payload.maintenance),
-      background: Boolean(payload.background)
+      background: Boolean(payload.background), logs: Boolean(payload.logs)
     };
     state.todos = entriesFrom(payload.todos, 'todos');
     state.reflections = entriesFrom(payload.reflections, 'reflections');
@@ -283,6 +284,13 @@
     state.hostUrl = asText(payload.hostUrl);
     state.maintenance = payload.maintenance || {};
     state.activity = payload.activity || {};
+    state.logs = {
+      dir: asText(payload.logs?.dir), day: asText(payload.logs?.day),
+      bytes: Number.isFinite(payload.logs?.bytes) ? payload.logs.bytes : 0,
+      capped: payload.logs?.capped === true,
+      retainDays: Number.isFinite(payload.logs?.retainDays) ? payload.logs.retainDays : 0,
+      error: asText(payload.logs?.error)
+    };
     state.settingsEffect = {
       state: asText(payload.settingsEffect?.state), message: asText(payload.settingsEffect?.message),
       restartRequired: payload.settingsEffect?.restartRequired
@@ -914,7 +922,67 @@
     renderRuntime();
     renderChat();
     renderAttachments();
+    renderLogs();
     updateControls();
+  }
+
+  function formatBytes(value) {
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  function renderLogs() {
+    if (!state.features.logs) {
+      $('logs-state').textContent = '不可用';
+      $('logs-summary').textContent = '当前宿主没有提供日志能力。';
+      return;
+    }
+    const logs = state.logs;
+    const failing = Boolean(logs.error);
+    $('logs-state').textContent = failing ? '写入异常' : logs.capped ? '今日已达上限' : logs.day ? '记录中' : '待写入';
+    $('logs-state').classList.toggle('is-warning', failing || logs.capped);
+    $('logs-path').textContent = logs.dir || '尚未创建日志目录';
+    const parts = [];
+    if (logs.day) parts.push(`当前文件 ${logs.day}.log，${formatBytes(logs.bytes)}`);
+    if (logs.retainDays) parts.push(`保留 ${logs.retainDays} 天`);
+    if (logs.capped) parts.push('已达当日上限，后续事件不再写入，明天自动恢复');
+    if (failing) parts.push(`写入失败：${logs.error}`);
+    if (!logs.day && !failing) parts.push('本次启动还没有写入事件');
+    $('logs-summary').textContent = parts.join('；');
+    if (state.logsLoaded) {
+      $('logs-view').textContent = state.logLines.length ? state.logLines.join('\n') : '最近两天没有记录到事件。';
+    }
+  }
+
+  async function loadLogs() {
+    if (!state.features.logs || pending.has('logs')) return false;
+    pending.add('logs');
+    updateControls();
+    try {
+      feedback('logs-feedback');
+      const payload = await api('/api/logs?limit=200');
+      // 只接受字符串行，避免任何非预期内容被当成 HTML 处理；textContent 本身也不解析标记。
+      state.logLines = Array.isArray(payload?.lines) ? payload.lines.filter((line) => typeof line === 'string').slice(-200) : [];
+      if (payload?.status) state.logs = {
+        dir: asText(payload.status.dir), day: asText(payload.status.day),
+        bytes: Number.isFinite(payload.status.bytes) ? payload.status.bytes : 0,
+        capped: payload.status.capped === true,
+        retainDays: Number.isFinite(payload.status.retainDays) ? payload.status.retainDays : 0,
+        error: asText(payload.status.error)
+      };
+      state.logsLoaded = true;
+      renderLogs();
+      $('logs-view').scrollTop = $('logs-view').scrollHeight;
+      return true;
+    } catch (error) {
+      feedback('logs-feedback', errorText(error), true);
+      return false;
+    } finally {
+      pending.delete('logs');
+      updateControls();
+    }
   }
 
   function updateControls() {
@@ -956,6 +1024,9 @@
     $('reflection-select').disabled = reflectionSaving || !selectedReflectionId;
     for (const [id, key] of [['open-harness', 'open-harness'], ['open-folder', 'open-folder']]) $(id).disabled = !usable || pending.has(key);
     $('open-folder').disabled ||= !state.dataDirectory;
+    $('logs-refresh').disabled = !usable || !state.features.logs || pending.has('logs');
+    $('logs-refresh').textContent = pending.has('logs') ? '读取中…' : '刷新';
+    $('open-logs').disabled = !usable || !state.features.logs || !state.logs.dir || pending.has('open-logs');
     $('background-toggle').disabled = !usable || !state.background.supported || pending.has('background') || configurationBusy;
     $('profiles-refresh').disabled = booting || busy || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving);
     $('reflections-refresh').disabled = booting || busy || reflectionSaving || pending.has('reflection-run');
@@ -1129,6 +1200,8 @@
       $(`settings-panel-${value}`).hidden = !selected;
     }
     $('settings-content').scrollTop = 0;
+    // 首次切到数据与维护才读日志：隐藏的页面不做轮询，也不在打开设置时白拉一次。
+    if (name === 'maintenance' && !state.logsLoaded) void loadLogs();
     if (focus) {
       const tab = $(`settings-tab-${name}`);
       tab.focus({ preventScroll: true });
@@ -2056,6 +2129,8 @@
   $('reflections-refresh').addEventListener('click', () => void refreshStatus(true, 'reflection-run-feedback'));
   $('profiles-refresh').addEventListener('click', () => void refreshStatus(true));
   $('open-folder').addEventListener('click', () => void mutate('open-folder', '/api/open-folder', {}, 'folder-feedback', '已请求本机打开数据文件夹。', { refresh: false }));
+  $('logs-refresh').addEventListener('click', () => void loadLogs());
+  $('open-logs').addEventListener('click', () => void mutate('open-logs', '/api/open-logs', {}, 'logs-feedback', '已请求本机打开日志文件夹。', { refresh: false }));
   $('open-harness').addEventListener('click', openHost);
   $('background-toggle').addEventListener('click', toggleBackground);
   window.addEventListener('beforeunload', (event) => {

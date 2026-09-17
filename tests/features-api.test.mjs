@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../server.mjs';
 import { PROFILE_DEFAULTS } from '../records.mjs';
+import { Logger } from '../logger.mjs';
 
 const testOptions = { timeout: 15_000 };
 const featureBools = ['activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
@@ -24,7 +25,7 @@ async function fixture(t, options = {}) {
   const profile = 'synthetic-profile';
   const clients = new Set(), requests = new Set(), liveApps = new Set();
   const calls = { createServices: [], openFolder: [], openHarness: [], activity: [], summary: [], background: [], reflection: [], prepare: [], run: [], cancel: [], release: [], closed: [] };
-  const controls = { maintenanceRunning: false, activityEnabled: false, backgroundEnabled: false, holdChat: false, holdBackground: false };
+  const controls = { maintenanceRunning: false, activityEnabled: false, backgroundEnabled: false, holdChat: false, holdBackground: false, failRuntimeStatus: false };
   const chatStarted = Promise.withResolvers(), chatFinished = Promise.withResolvers();
   const backgroundStarted = Promise.withResolvers(), backgroundFinished = Promise.withResolvers();
   let app, token;
@@ -87,13 +88,14 @@ async function fixture(t, options = {}) {
     controls.backgroundEnabled = false;
     app = await startServer({
       dataDir, home, profile, port: 0,
+      ...options.withLogger ? { logger: new Logger(dataDir) } : {},
       getHostUrl: () => `http://127.0.0.1:${app.server.address().port}/synthetic-harness`,
       openFolder: options.withOpenCallbacks === false ? undefined : async (...args) => { calls.openFolder.push(args); },
       openHarness: options.withOpenCallbacks === false ? undefined : async (...args) => { calls.openHarness.push(args); },
       createRuntime: store => ({
         store,
         selection: () => ({ provider: 'synthetic-provider', model: 'synthetic-model' }),
-        status: async () => ({ installed: true, configured: true, connected: true, credentialSource: 'harness', modelVerified: false }),
+        status: async () => { if (controls.failRuntimeStatus) throw new Error('synthetic runtime status failure'); return { installed: true, configured: true, connected: true, credentialSource: 'harness', modelVerified: false }; },
         async prepare(sessionId) { calls.prepare.push(sessionId); },
         async run(sessionId, text, { onDelta }) {
           calls.run.push({ sessionId, text });
@@ -622,4 +624,58 @@ test('新增写接口统一要求 CSRF 与 JSON，未授权请求不能修改记
   const after = await f.state();
   for (const key of ['todos', 'profiles', 'reflections', 'memoryCandidates', 'memories', 'settings']) assert.deepEqual(after[key], before[key]);
   for (const key of ['openFolder', 'openHarness', 'background', 'activity', 'reflection', 'run']) assert.deepEqual(f.calls[key], [], key);
+});
+
+test('未注入 logger 时日志接口可用但为空，open-logs 明确 501 且不调用打开回调', testOptions, async t => {
+  const f = await fixture(t);
+  const payload = assertStatus(await f.request('/api/logs'), 200);
+  assert.deepEqual(payload.lines, []);
+  assert.equal(payload.status.dir, '');
+  assert.deepEqual((await f.state()).logs, payload.status);
+  assertStatus(await f.post('/api/open-logs'), 501);
+  assert.deepEqual(f.calls.openFolder, []);
+});
+
+test('注入 logger 后日志接口返回真实事件，open-logs 只打开日志目录', testOptions, async t => {
+  const f = await fixture(t, { withLogger: true });
+  // 触发一次 5xx：runtime.status 抛错会让 /api/health 走 500 分支并记录 http.error。
+  f.controls.failRuntimeStatus = true;
+  await f.request('/api/health');
+  f.controls.failRuntimeStatus = false;
+  const payload = assertStatus(await f.request('/api/logs'), 200);
+  assert.ok(payload.status.dir.endsWith(join('claudia', 'logs')), payload.status.dir);
+  assert.ok(payload.lines.some(line => line.includes('http.error')), payload.lines.join('\n'));
+  // 日志只记录方法、路径与状态，不得出现请求体或对话内容。
+  assert.ok(payload.lines.every(line => !line.includes('synthetic-provider')));
+  assertStatus(await f.post('/api/open-logs'), 200);
+  assert.deepEqual(f.calls.openFolder, [[payload.status.dir]]);
+  // limit 只接受正整数，非法值回落默认值而不是报错或读取全部。
+  assert.equal(assertStatus(await f.request('/api/logs?limit=abc'), 200).lines.length <= 200, true);
+  assert.equal(assertStatus(await f.request('/api/logs?limit=1'), 200).lines.length, 1);
+});
+
+test('日志接口拒绝写方法、外部路径与缺少凭证的请求', testOptions, async t => {
+  const f = await fixture(t, { withLogger: true });
+  assertStatus(await f.post('/api/logs'), 404);
+  for (const body of [{ path: join(f.root, 'untrusted') }, { dir: '../outside' }, { limit: 10 }]) {
+    assertStatus(await f.post('/api/open-logs', body), 400);
+  }
+  for (const headers of [{ 'x-claudia-token': undefined }, { 'x-claudia-token': 'invalid' }, { 'content-type': 'text/plain' }]) {
+    assertStatus(await f.post('/api/open-logs', {}, { headers }), 403);
+  }
+  assert.deepEqual(f.calls.openFolder, []);
+});
+
+test('日志目录尚未创建时 open-logs 返回 409 而不是 500', testOptions, async t => {
+  const f = await fixture(t, { withLogger: true });
+  // 刚启动还没有任何事件落盘，目录不存在；此时不能把它当成本机操作失败。
+  assert.equal((await f.state()).logs.day, '');
+  assertStatus(await f.post('/api/open-logs'), 409);
+  assert.deepEqual(f.calls.openFolder, [], '目录不存在时不得调用打开回调');
+  // 产生一条事件后目录出现，同一个按钮就应该可用。
+  f.controls.failRuntimeStatus = true;
+  await f.request('/api/health');
+  f.controls.failRuntimeStatus = false;
+  assertStatus(await f.post('/api/open-logs'), 200);
+  assert.equal(f.calls.openFolder.length, 1);
 });

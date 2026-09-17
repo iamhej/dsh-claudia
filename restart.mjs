@@ -2,6 +2,7 @@ import { lstatSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { absolutePath, installedPackage, profileName, readSafe, safePath, satisfies, writePrivate } from './lifecycle.mjs';
+import { noopLogger } from './logger.mjs';
 
 const PROTOCOL = 1;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -55,10 +56,10 @@ function busyState(callback) {
 }
 
 export class RestartControl {
-  constructor({ dataDir, home, profile = 'web', runningVersion, supervised = process.env.CLAUDIA_SUPERVISED === '1', isBusy = () => false }) {
+  constructor({ dataDir, home, profile = 'web', runningVersion, supervised = process.env.CLAUDIA_SUPERVISED === '1', isBusy = () => false, logger = noopLogger }) {
     this.o = paths({ dataDir, home, profile });
     if (!version(runningVersion)) throw new Error('运行版本无效');
-    this.runningVersion = runningVersion; this.supervised = supervised === true; this.isBusy = isBusy;
+    this.runningVersion = runningVersion; this.supervised = supervised === true; this.isBusy = isBusy; this.logger = logger;
   }
   heartbeat() {
     if (!this.supervised) return null;
@@ -92,7 +93,7 @@ export class RestartControl {
   }
   request() {
     const state = this.status();
-    const reject = (status, message) => { throw Object.assign(new Error(message), { status, statusCode: status }); };
+    const reject = (status, message) => { this.logger.warn('restart.reject', { status, reason: state.reason, message }); throw Object.assign(new Error(message), { status, statusCode: status }); };
     if (!state.supported) reject(503, state.message);
     if (state.busy) reject(409, '宿主或其他 agent 忙碌，请等待任务结束后重启');
     if (state.state === 'error' || !state.installedVersion) reject(503, state.message);
@@ -102,6 +103,7 @@ export class RestartControl {
       const heartbeat = this.heartbeat();
       if (!heartbeat) reject(503, 'supervisor 心跳已失效');
       writePrivate(this.o.request, JSON.stringify({ id: randomUUID(), requestedAt: new Date().toISOString(), expectedPid: process.pid, desiredVersion: state.installedVersion, home: this.o.home, profile: this.o.profile, supervisorToken: heartbeat.token, phase: 'pending' }));
+      this.logger.info('restart.request', { from: this.runningVersion, to: state.installedVersion, hostPid: process.pid });
     } catch (error) { if (error.status) throw error; reject(503, '无法安全写入手动重启请求'); }
     return this.status();
   }

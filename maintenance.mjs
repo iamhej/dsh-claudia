@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { constants, closeSync, readFileSync, writeFileSync, fsyncSync } from 'node:fs';
 import { PrivateFiles } from './activity.mjs';
+import { noopLogger } from './logger.mjs';
 
 const DAY = 86400000;
 const STATE_KEY = 'maintenanceStateV1';
@@ -84,9 +85,9 @@ function selected(entries, window, kind, maxCount, maxText) {
 }
 
 export class Maintenance {
-  constructor({ store, runtime, activity, isBusy = () => !!runtime?.running, installUpdate, onUpdateReady }) {
+  constructor({ store, runtime, activity, isBusy = () => !!runtime?.running, installUpdate, onUpdateReady, logger = noopLogger }) {
     this.store = store; this.runtime = runtime; this.activity = activity; this.isBusy = isBusy;
-    this.installUpdate = installUpdate; this.onUpdateReady = onUpdateReady;
+    this.installUpdate = installUpdate; this.onUpdateReady = onUpdateReady; this.logger = logger;
     this.closed = false; this.timer = null; this.operation = null; this.session = null; this.abort = null;
     const saved = store.get(STATE_KEY, {});
     this.states = {};
@@ -107,6 +108,8 @@ export class Maintenance {
   start() {
     if (this.closed) throw new Error('Maintenance 已关闭');
     if (!this.timer) { this.timer = setInterval(() => { void this.tick().catch(() => {}); }, 60000); this.timer.unref(); }
+    // 记录调度器确实起来了；空闲不等于没运行，日志用来区分这两件事。
+    this.logger.info('maintenance.scheduler.start', { reflection: this._enabled('reflectionEnabled'), memory: this._enabled('memorySuggestionsEnabled'), update: this._enabled('autoUpdateEnabled') });
     return this.tick();
   }
   _locked(action) {
@@ -160,14 +163,18 @@ export class Maintenance {
     state.checkedAt = now.toISOString(); state.nextRetryAt = new Date(now.getTime() + 5 * 60000 * state.attempts).toISOString();
     try {
       this._save();
+      const started = Date.now();
       await work(state);
       state.done = true; state.error = ''; state.nextRetryAt = null;
       if (state.state === 'running') state.state = 'complete';
       this._save();
+      // 只记录任务种类、耗时与结果，不写回顾正文或记忆候选内容。
+      this.logger.info(`maintenance.${kind}.ok`, { window: key, attempt: state.attempts, ms: Date.now() - started, version: kind === 'update' ? state.version : undefined });
     } catch (error) {
       state.state = 'error'; state.error = errorText(error); state.done = false;
       if (state.attempts >= 3) state.nextRetryAt = null;
       try { this._save(); } catch { state.error = '无法保存维护状态；不会标记为成功'; }
+      this.logger.warn(`maintenance.${kind}.fail`, { window: key, attempt: state.attempts, giveUp: state.attempts >= 3, error: state.error });
     }
   }
   async _model(prompt, flag) {

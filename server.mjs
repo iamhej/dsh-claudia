@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { Store, makeContext } from './store.mjs';
 import { PROFILE_DEFAULTS } from './records.mjs';
-import { readFileSync } from 'node:fs';
+import { noopLogger } from './logger.mjs';
+import { existsSync, readFileSync } from 'node:fs';
 const runningVersion=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version;
 const root=dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +19,7 @@ function json(res,status,data){res.writeHead(status,{'Content-Type':'application
 async function body(req,maxBytes=65536,limitStatus=413){let length=0;const chunks=[];for await(const chunk of req){length+=chunk.length;if(length>maxBytes)throw Object.assign(new Error('请求内容太长'),{status:limitStatus});chunks.push(chunk);}try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');if(!value||Array.isArray(value)||typeof value!=='object')throw new Error();return value;}catch{throw Object.assign(new Error('无效 JSON 对象'),{status:400});}}
 function requiredText(text,max){if(typeof text!=='string'||!text.trim()||text.length>max)throw Object.assign(new Error(`请输入 1—${max} 字的内容`),{status:400});return text.trim();}
 
-export async function startServer({dataDir,port=4317,createRuntime,createServices,home='',profile='web',openFolder,openHarness,getHostUrl=()=>'',hasOtherAgents=()=>false}) {
+export async function startServer({dataDir,port=4317,createRuntime,createServices,home='',profile='web',openFolder,openHarness,getHostUrl=()=>'',hasOtherAgents=()=>false,logger=noopLogger}) {
   const csrfToken=randomBytes(32).toString('hex');
   const store=new Store(resolve(dataDir,'claudia.sqlite'));
   const runtime=createRuntime(store);
@@ -58,7 +59,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       if(req.method==='GET'&&path==='/api/bootstrap')return json(res,200,{csrfToken});
       if(req.method==='GET'&&path==='/api/state'){
         const end=new Date(),start=new Date(end.getTime()-86400000);
-        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:store.reflections(),memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false}});
+        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:store.reflections(),memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false},logs:logger.status()});
       }
       if(req.method==='GET'&&path==='/api/health')return json(res,200,{ok:true,plugin:'dsh-claudia',version:runningVersion,pid:process.pid,home,profile,busy:busy()||hostBusy(),runtime:await runtime.status()});
       if(req.method==='POST'&&path==='/api/restart'){
@@ -84,6 +85,12 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       if(req.method==='POST'&&path==='/api/reflections/run'){await readBody(req);if(busy())return json(res,409,{error:'请等待当前任务结束'});if(!store.get('reflectionEnabled',false))return json(res,400,{error:'请先在设置开启每日回顾并确认模型数据分享'});return json(res,200,await services.maintenance.runReflection());}
       if(req.method==='POST'&&path.startsWith('/api/reflections/')){const data=await readBody(req),entry=store.reflections().find(e=>e.id===path.split('/').pop());if(!entry)return json(res,404,{error:'回顾不存在'});return json(res,200,store.saveReflection({...entry,text:requiredText(data.text,12000)},data.revision));}
       if(req.method==='POST'&&path.startsWith('/api/memory-candidates/')){const data=await readBody(req);if(typeof data.accept!=='boolean')return json(res,400,{error:'确认选项无效'});return json(res,200,store.decideCandidate(path.split('/').pop(),data.accept));}
+      if(req.method==='GET'&&path==='/api/logs'){
+        // 只读自己的日志目录，不接受任何外部路径或文件名参数。
+        const requested=Number(new URL(req.url,origins[0]).searchParams.get('limit'));
+        return json(res,200,{lines:logger.recent(Number.isInteger(requested)&&requested>0?requested:200),status:logger.status()});
+      }
+      if(req.method==='POST'&&path==='/api/open-logs'){const data=await readBody(req);if(Object.keys(data).length)return json(res,400,{error:'打开日志不接受外部路径参数'});if(!openFolder)return json(res,501,{error:'当前环境不能打开文件夹'});const dir=logger.dir();if(!dir)return json(res,501,{error:'当前环境没有可用的日志目录'});if(!existsSync(dir))return json(res,409,{error:'日志目录尚未创建；写入第一条事件后才会出现'});await openFolder(dir);return json(res,200,{ok:true});}
       if(req.method==='POST'&&path==='/api/open-folder'){const data=await readBody(req);if(Object.keys(data).length)return json(res,400,{error:'打开文件夹不接受外部路径参数'});if(!openFolder)return json(res,501,{error:'当前环境不能打开文件夹'});await openFolder(dataDir);return json(res,200,{ok:true});}
       if(req.method==='POST'&&path==='/api/open-harness'){await readBody(req);if(!openHarness)return json(res,501,{error:'未找到宿主界面'});await openHarness();return json(res,200,{ok:true});}
       if(req.method==='POST'&&path==='/api/background'){const data=await readBody(req);if(typeof data.enabled!=='boolean')return json(res,400,{error:'后台开关无效'});if(busy())return json(res,409,{error:'请等待当前任务结束'});if(!services.background)return json(res,501,{error:'当前环境不支持后台服务'});configuring=true;try{return json(res,200,await services.background.setEnabled(data.enabled));}finally{configuring=false;}}
@@ -176,7 +183,12 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
         if(files[path]){const data=await readFile(resolve(root,'public',files[path]));res.writeHead(200,{'Content-Type':path.endsWith('.css')?'text/css; charset=utf-8':path.endsWith('.js')?'text/javascript; charset=utf-8':'text/html; charset=utf-8'});return res.end(data);}
       }
       json(res,404,{error:'未找到该资源'});
-    }catch(error){if(!res.headersSent)json(res,error.status||500,{error:error.status?error.message:'本机操作失败，请检查宿主状态后重试'});else res.end();}
+    }catch(error){
+      const status=error.status||500;
+      // 只记录方法、路径与状态；请求体、对话正文和附件内容一律不进日志。
+      if(status>=500)logger.error('http.error',{method:req.method,path:req.url?.split('?')[0],status,error});
+      if(!res.headersSent)json(res,status,{error:error.status?error.message:'本机操作失败，请检查宿主状态后重试'});else res.end();
+    }
   });
   try {await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});actualPort=server.address().port;}
   catch(error){store.close();await runtime.close();throw error;}

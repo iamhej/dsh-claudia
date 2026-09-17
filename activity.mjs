@@ -6,6 +6,7 @@ import { resolve, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { noopLogger } from './logger.mjs';
 
 const SOURCE = 'local-foreground';
 const DAY = 86400000;
@@ -135,11 +136,11 @@ function aggregate(entries, start, end) {
 const mdCell = value => value.replace(/[&<>|`\\]/g, char => `&#${char.codePointAt(0)};`);
 
 export class ActivityTracker {
-  constructor(dataDir) {
+  constructor(dataDir, { logger = noopLogger } = {}) {
     this.dataDir = resolve(dataDir); this.files = new PrivateFiles(dataDir, 'activity'); this.runtimeFiles = new PrivateFiles(dataDir, '.runtime');
     this.enabled = false; this.running = false; this.error = ''; this.closed = false; this.state='disabled'; this.generation=0;
     this.child = null; this.queue = Promise.resolve(); this.stopTask = null; this.watchdog = null;
-    this.lastEnd = 0; this.daily = null;
+    this.lastEnd = 0; this.daily = null; this.logger = logger;
   }
   status() { return { enabled: this.enabled, running: this.running, state:this.error?'error':this.running?'running':this.state, error: this.error, source: SOURCE }; }
   setEnabled(value) {
@@ -155,6 +156,8 @@ export class ActivityTracker {
         try { await this._start(); } catch (error) { this.error = error.message; this.running = false; await this._stop(); }
       }
       if(generation===this.generation)this.state=this.error?'error':this.running?'running':this.enabled?'starting':'disabled';
+      // 只记录采集开关与组件运行状态，不记录任何应用名或时间段明细。
+      if(generation===this.generation)this.logger.event(this.error?'warn':'info',value?'activity.enable':'activity.disable',{running:this.running,state:this.state,error:this.error||undefined});
       return this.status();
     });
     return this.queue;

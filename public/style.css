@@ -325,6 +325,10 @@ svg { flex: 0 0 auto; }
 .profile-editor .form-actions { flex-wrap: wrap; margin-bottom: 7px; }
 .profile-editor .field-help.is-error { color: var(--danger); }
 .data-path { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.9; background: #edf2f4; border-radius: 10px; padding: 12px; }
+.logs-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.logs-view { margin-top: 12px; max-height: 260px; overflow: auto; background: #edf2f4; border-radius: 10px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.8; color: #4d6472; white-space: pre; overflow-wrap: normal; tab-size: 2; }
+.quiet-tag.is-warning { background: #f0e8dc; color: #927951; }
+@media (max-width: 420px) { .logs-actions { flex-basis: 100%; justify-content: flex-end; } }
 #maintenance-status { white-space: pre-wrap; }
 #open-harness, #background-toggle { margin-top: 13px; }
 .capability-line > span:first-child { overflow-wrap: anywhere; min-width: 0; }

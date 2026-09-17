@@ -7,6 +7,7 @@ import { ActivityTracker } from './activity.mjs';
 import { Maintenance } from './maintenance.mjs';
 import { BackgroundService, createInstaller } from './lifecycle.mjs';
 import { RestartControl } from './restart.mjs';
+import { Logger, observeProcess } from './logger.mjs';
 import { readFileSync } from 'node:fs';
 const runningVersion=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version;
 const exec=promisify(execFile);
@@ -24,14 +25,16 @@ export async function apply(ctx,config={}) {
   if(typeof dataDir!=='string'||!isAbsolute(dataDir))throw new Error('dataDir must be absolute');
   const home=config.home??dirname(ctx.dshHomePath('claudia'));
   const profile=config.profile??'web';
+  const logger=new Logger(dataDir,{...Number.isInteger(config.logMaxBytesPerDay)?{maxBytesPerDay:config.logMaxBytesPerDay}:{},...Number.isInteger(config.logRetainDays)?{retainDays:config.logRetainDays}:{}});
+  const startedAt=Date.now();
   const hostUrl=()=>`http://127.0.0.1:${ctx.webServer.port}`;
-  const app=await startServer({dataDir,port,home,profile,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values()].map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
+  const app=await startServer({dataDir,port,home,profile,logger,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values()].map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
     createServices:({store,runtime,isBusy,restartBusy,pluginPort})=>{
       const options={dataDir,home,profile,dshBin:config.dshBin??process.argv[1],nodeBin:config.nodeBin??process.execPath,hostPort:ctx.webServer.port,pluginPort,pnpmPath:config.pnpmPath};
-      const activity=new ActivityTracker(dataDir);
-      const maintenance=new Maintenance({store,runtime,activity,isBusy,installUpdate:createInstaller(options)});
-      const background=new BackgroundService(options);
-      const restart=new RestartControl({...options,runningVersion,isBusy:restartBusy});
+      const activity=new ActivityTracker(dataDir,{logger});
+      const maintenance=new Maintenance({store,runtime,activity,isBusy,installUpdate:createInstaller({...options,logger}),logger});
+      const background=new BackgroundService(options,{logger});
+      const restart=new RestartControl({...options,runningVersion,isBusy:restartBusy,logger});
       return {activity,maintenance,background,restart};
     }});
   let privacyTimer=null,privacySync=false;
@@ -41,10 +44,12 @@ export async function apply(ctx,config={}) {
       if(enabled!==app.services.activity.status().enabled)await app.services.activity.setEnabled(enabled);
     }finally{privacySync=false;}
   };
-  ctx.effect(()=>async()=>{clearInterval(privacyTimer);await app.close();});
+  const detach=observeProcess({logger,uptimeSec:()=>Math.round((Date.now()-startedAt)/1000)});
+  ctx.effect(()=>async()=>{clearInterval(privacyTimer);detach();logger.info('plugin.close',{uptimeSec:Math.round((Date.now()-startedAt)/1000)});await app.close();logger.close();});
   ctx.appReady.onReady(()=>{
     privacyTimer=setInterval(()=>syncPrivacy().catch(()=>{}),1000);privacyTimer.unref();
     process.stderr.write(`Claudia plugin ready: ${app.url}\n`);
+    logger.info('plugin.ready',{version:runningVersion,url:app.url,hostPort:ctx.webServer.port,pid:process.pid,supervised:process.env.CLAUDIA_SUPERVISED==='1'});
     app.services.activity.setEnabled(app.store.get('activityEnabled',false)).catch(()=>{});
     app.services.maintenance.start().catch(()=>{});
     if(config.openBrowser!==false&&ctx.webStartup.openBrowser&&!process.env.CLAUDIA_SUPERVISED&&!process.env.SSH_CONNECTION&&!process.env.SSH_TTY)open(app.url).catch(()=>{});
