@@ -3,7 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
   const svgNS = 'http://www.w3.org/2000/svg';
-  const tabNames = ['today', 'journal', 'todo', 'memories', 'capabilities'];
+  const tabNames = ['today', 'journal', 'todo', 'routine', 'memories'];
   const profileNames = ['soul', 'user', 'system'];
   const settingFields = {
     allowContext: 'allow-context', activityEnabled: 'activity-enabled', reflectionEnabled: 'reflection-enabled',
@@ -16,20 +16,43 @@
     dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
     background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
     restart: { supported: false, pending: false, state: 'idle' }, busy: false,
-    logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' }, logLines: [], logsLoaded: false
+    logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' }, logLines: [], logsLoaded: false,
+    routines: null, routineRuns: [], routineCapability: { network: false, verified: false, message: '正在读取 Routine 联网能力…' }
   };
   const pending = new Set();
   const profileDrafts = new Map();
   const reflectionDrafts = new Map();
-  let selectedReflectionId = '';
+  const reflectionCards = new Map();
+  let reflectionVisibleCount = 7;
+  let reflectionReceipt = null;
+  let emailSnapshot = null;
+  let emailReading = false;
+  let emailError = '';
+  let emailBusy = false;
+  // 只保存非敏感快照；授权码仅留在输入框和本次 POST 的临时请求中。
+  let emailAccountSnapshot = null;
+  let emailAccountReading = false;
+  let emailAccountBusy = false;
+  let emailAccountNeedsReadback = false;
+  let emailAccountError = '';
+  let emailAccountReadSequence = 0;
+  let emailAccountEditing = false;
+  let emailReviewPreparing = false;
+  let emailReviewSequence = 0;
+  const emailReviewMessageIds = new Set();
+  const emailReviewRanges = new Map([[7, '最近一周'], [30, '最近 30 天'], [365, '最近一年']]);
+  const defaultEmailReviewPrompt = days => `帮我看看${emailReviewRanges.get(days) || '所选范围'}的邮件标题和发件人，标出值得查看、疑似广告、欺诈风险或疑似官方的邮件，并简要说明依据。`;
+  let inlineConfirm = false;
+  let confirmReturnFocus = null;
   let journalView = 'notes';
   let settingsNameRevision;
   let settingsBaselineRevision;
   let settingsDraft = null;
   let settingsClosing = false;
   let settingsCloseResolver = null;
-  const settingsTabs = ['general', 'persona', 'automation', 'maintenance'];
+  const settingsTabs = ['general', 'persona', 'automation', 'maintenance', 'capabilities', 'plugins'];
   let settingsTab = 'general';
+  let pluginsReadSequence = 0;
   let settingsBaseline = null;
   let settingsReceipt = null;
   let settingsReturnFocus = null;
@@ -55,12 +78,26 @@
   let memorySaving = false;
   let settingsSaving = false;
   let resetting = false;
-  let journalTimeDirty = false;
   let composing = false;
   let compositionEndedAt = -Infinity;
   let confirmResolver = null;
   let toastTimer;
   let localSequence = 0;
+  const routineCards = new Map();
+  const routineAwaiting = new Map();
+  let routineDraftId = '';
+  let routineDraftRevision;
+  let routineDraftDirty = false;
+  let routineDraftBlocked = false;
+  let routineBusy = false;
+  let routinePolling = false;
+  let routineReadSequence = 0;
+  let routineLastRead = 0;
+  let routinePollError = '';
+  let routineUncertain = false;
+  const routineSharing = '最近 24 小时的有限本地记录（对话、Journal、待办及回顾摘录），以及现有人格与用户设定，会发送给 Harness 所选模型，可能产生费用。';
+  const routineNetworkSharing = '所选模型用这些内容推导抽象话题；仅抽象话题词进入独立联网执行，并发给 Harness 搜索提供方，不发送任务原始 prompt 或本地记录原文给搜索。搜索提供方可能内部再调用模型或搜索，并产生额外费用。\n联网执行仅对公开网页匿名 GET，不携带 Cookie、不登录；不允许文件、Shell 或任务管理工具。没有可用本地记录时，仍可使用兜底话题搜索。';
+  const routineStatusLabels = { running: '运行中', success: '成功', silent: '静默 · 未投递', 'no-data': '无数据 · 未投递', failed: '失败', cancelled: '已取消' };
 
   function element(tag, className, text) {
     const result = document.createElement(tag);
@@ -172,6 +209,8 @@
           : { Accept: 'application/json' },
         ...(mutation ? { body: JSON.stringify(options.body || {}) } : {})
       });
+      // 邮箱接口失败时不读取服务端错误正文，避免凭据进入通用错误反馈。
+      if (!response.ok && path === '/api/email/account') throw apiError(null, response.status);
       let payload;
       try { payload = await readJSON(response); }
       catch (error) {
@@ -179,7 +218,7 @@
         throw error;
       }
       if (!response.ok) throw apiError(payload, response.status);
-      return payload;
+      return options.withStatus ? { status: response.status, payload } : payload;
     } catch (error) {
       if (error.name === 'AbortError') {
         const timeoutError = new Error('本机服务响应超时。操作可能已完成，请先读取状态再决定是否重试。');
@@ -204,6 +243,7 @@
       if (type === 'messages') {
         if (!['user', 'assistant', 'system'].includes(item.role) || typeof item.content !== 'string') continue;
         Object.assign(entry, { role: item.role, content: item.content, status: asText(item.status) });
+        if (item.source === 'email-review' || emailReviewMessageIds.has(entry.id)) entry.source = 'email-review';
       } else {
         if (typeof item.text !== 'string') continue;
         entry.text = item.text;
@@ -254,7 +294,8 @@
     // 保存日志等侧栏操作也会刷新状态，不能让它覆盖仍在接收的流式消息。
     if (activeRun && activeRun.phase !== 'sync') {
       const run = activeRun;
-      const savedUser = state.messages.find((message) => message.role === 'user' && !run.existingIds.has(message.id) && message.content === run.user.content);
+      const savedUser = state.messages.find((message) => message.id === run.user.id)
+        || state.messages.find((message) => message.role === 'user' && (message.source || 'chat') === run.source && !run.existingIds.has(message.id) && message.content === run.user.content);
       if (savedUser) run.user = savedUser;
       else state.messages.push(run.user);
       if (run.assistant) {
@@ -276,6 +317,7 @@
       memoryCandidates: Array.isArray(payload.memoryCandidates), automation: Boolean(payload.maintenance),
       background: Boolean(payload.background), logs: Boolean(payload.logs)
     };
+    applyRoutineState(payload);
     state.todos = entriesFrom(payload.todos, 'todos');
     state.reflections = entriesFrom(payload.reflections, 'reflections');
     state.memoryCandidates = entriesFrom(payload.memoryCandidates, 'memoryCandidates');
@@ -283,6 +325,7 @@
     state.dataDirectory = asText(payload.dataDirectory);
     state.hostUrl = asText(payload.hostUrl);
     state.maintenance = payload.maintenance || {};
+    observeReflectionRun();
     state.activity = payload.activity || {};
     state.logs = {
       dir: asText(payload.logs?.dir), day: asText(payload.logs?.day),
@@ -343,6 +386,7 @@
         renderIdentity();
         renderRuntime();
         renderServices();
+        renderRoutines();
         updateControls();
       } else renderAll();
       return true;
@@ -559,6 +603,500 @@
     if (!count('dismissed')) groups.dismissed.append(element('p', 'field-help', '还没有忽略的事项。'));
   }
 
+  function routineRunsFrom(value) {
+    return Array.isArray(value) ? value.filter((run) => run && asId(run.id) && Object.hasOwn(routineStatusLabels, run.status)).slice(0, 20) : [];
+  }
+
+  function applyRoutineSnapshot(snapshot) {
+    state.routines = snapshot && Array.isArray(snapshot.jobs) && (snapshot.revision === null || typeof snapshot.revision === 'string')
+      ? { jobs: snapshot.jobs.filter((job) => job && asId(job.id) && job.schedule), revision: snapshot.revision } : null;
+    if (routineDraftRevision === undefined || !routineDraftDirty && !routineDraftId && !routineDraftBlocked) routineDraftRevision = state.routines?.revision;
+  }
+
+  function applyRoutineState(payload) {
+    ++routineReadSequence;
+    applyRoutineSnapshot(payload.routines);
+    state.routineRuns = routineRunsFrom(payload.routineRuns);
+    state.routineCapability = {
+      network: payload.routineCapability?.network === true,
+      verified: payload.routineCapability?.verified === true,
+      message: asText(payload.routineCapability?.message) || (payload.routineCapability?.network === true
+        ? '联网接线可用，不代表本次搜索请求成功。' : '当前服务未提供可用联网能力；联网任务可保存为停用定义。')
+    };
+    routineLastRead = Date.now();
+    routinePollError = '';
+    for (const [id, receipt] of routineAwaiting) {
+      const job = state.routines?.jobs.find((item) => asId(item.id) === id);
+      const seen = state.routineRuns.some((run) => asId(run.jobId) === id && !receipt.ids.has(asId(run.id))) || job?.lastRun && !receipt.ids.has(asId(job.lastRun.id));
+      if (seen) routineAwaiting.delete(id);
+      else if (Date.now() - receipt.at > 60000) {
+        routineAwaiting.delete(id);
+        routineUncertain = true;
+        feedback('routine-feedback', '已受理，但尚未读到本次运行结果。请刷新状态核对，不要重复触发。', true);
+      }
+    }
+  }
+
+  function routineJob(id) { return state.routines?.jobs.find((job) => asId(job.id) === id); }
+  function routineNetworkBlocked(job) { return job?.allowNetwork === true && !state.routineCapability.network; }
+  function routineBlockedReason(job) {
+    return asText(job?.blockedReason) || (routineNetworkBlocked(job) ? state.routineCapability.message : '');
+  }
+  function routineRunning(id) {
+    return routineAwaiting.has(id) || routineJob(id)?.lastRun?.status === 'running' || state.routineRuns.some((run) => asId(run.jobId) === id && run.status === 'running');
+  }
+  function routineConflict() {
+    return routineDraftBlocked || Boolean((routineDraftDirty || routineDraftId) && (routineDraftRevision !== state.routines?.revision || routineDraftId && !routineJob(routineDraftId)));
+  }
+  function routineDefinition(job) {
+    return { name: job.name, prompt: job.prompt, schedule: job.schedule, allowNetwork: job.allowNetwork === true, delivery: job.delivery, enabled: job.enabled === true };
+  }
+  function routineScheduleLabel(schedule) {
+    if (schedule.type === 'interval') return `每 ${schedule.hours} 小时`;
+    if (schedule.type === 'weekly') return `每周 ${(schedule.days || []).map((day) => ['日', '一', '二', '三', '四', '五', '六'][day]).join('、')} · ${asText(schedule.time)}`;
+    return `每日 ${asText(schedule.time)}`;
+  }
+
+  function updateRoutineControls() {
+    const available = Boolean(state.routines);
+    const locked = !canMutate() || !available || routineBusy || routineUncertain;
+    $('routine-fields').disabled = routineBusy;
+    $('routine-new').disabled = routineBusy;
+    $('routine-cancel-edit').hidden = !routineDraftId && !routineDraftDirty && !routineDraftBlocked;
+    $('routine-cancel-edit').disabled = routineBusy;
+    const networkBlocked = routineNetworkBlocked({ allowNetwork: $('routine-network').checked });
+    $('routine-enabled').disabled = networkBlocked && !$('routine-enabled').checked;
+    $('routine-enabled').title = networkBlocked ? '当前联网能力不可用；可取消启用并保存停用定义。' : '';
+    $('routine-save').disabled = locked || routineConflict() || !$('routine-name').value.trim() || !$('routine-prompt').value.trim() || networkBlocked && $('routine-enabled').checked;
+    $('routine-save').textContent = routineBusy ? '处理中…' : routineDraftId ? '保存修改' : '保存任务';
+    $('routine-recheck').disabled = routineBusy || routinePolling || booting || restartInFlight;
+    $('routine-rebase').hidden = !routineConflict();
+    $('routine-rebase').disabled = locked;
+    $('routine-draft-status').textContent = !available ? '当前服务尚未提供 Routine，草稿可保留，暂不能保存。'
+      : routineConflict() ? '版本有变或上次保存未确认；草稿保留。请核对任务卡后选择「核对后沿用草稿」。'
+        : routineDraftDirty ? '有未保存的更改 · 刷新和切换标签不会覆盖草稿' : routineDraftId ? '正在编辑 · 轮询不会覆盖正文' : '新任务默认停用';
+    for (const [id, view] of routineCards) {
+      const job = routineJob(id);
+      if (!job) continue;
+      view.toggle.checked = job.enabled === true;
+      view.toggle.disabled = locked || routineNetworkBlocked(job) && !job.enabled;
+      view.toggle.title = !job.enabled && routineNetworkBlocked(job) ? routineBlockedReason(job) : '';
+      view.toggle.setAttribute('aria-label', `${job.enabled ? '停用' : '启用'}：${asText(job.name)}`);
+      view.switchText.textContent = job.enabled ? '已启用' : '已停用';
+      view.edit.disabled = routineBusy;
+      view.remove.disabled = locked;
+      view.run.disabled = locked || routineNetworkBlocked(job) || routineRunning(id);
+      view.run.querySelector('span').textContent = routineRunning(id) ? '运行中 / 待同步' : '手动运行';
+      view.run.title = routineNetworkBlocked(job) ? routineBlockedReason(job) : job.allowNetwork
+        ? '确认数据共享与联网后运行；无本地记录时可用兜底话题搜索' : '单独确认后，将本地摘录发送给 Harness 所选模型';
+    }
+  }
+
+  function syncRoutineSchedule() {
+    const type = $('routine-type').value;
+    $('routine-time-field').hidden = type === 'interval';
+    $('routine-time').disabled = type === 'interval';
+    $('routine-hours-field').hidden = type !== 'interval';
+    $('routine-hours').disabled = type !== 'interval';
+    $('routine-days').hidden = type !== 'weekly';
+    $('routine-days').disabled = type !== 'weekly';
+  }
+
+  async function editRoutine(id = '', cancelling = false) {
+    if (routineBusy) return;
+    if (routineDraftDirty || routineDraftBlocked) {
+      if (!await confirmAction(cancelling ? '取消编辑并放弃草稿？' : '替换当前草稿？', cancelling ? '只放弃当前 Routine 的未保存草稿，不修改已保存任务。请先复制需要的名称与正文；选择继续编辑会完整保留草稿。' : '未保存的 Routine 草稿将被替换，请先复制需要的内容。', cancelling ? '放弃草稿并取消编辑' : '替换草稿', '继续编辑')) return;
+    }
+    const job = id ? routineJob(id) : null;
+    if (id && !job) { notify('这项任务已不存在，请刷新状态。'); return; }
+    routineDraftId = id;
+    routineDraftRevision = state.routines?.revision;
+    routineDraftDirty = false;
+    routineDraftBlocked = false;
+    $('routine-form').reset();
+    $('routine-form-title').textContent = id ? '编辑 Routine' : '新建 Routine';
+    if (job) {
+      $('routine-name').value = asText(job.name);
+      $('routine-prompt').value = asText(job.prompt);
+      $('routine-type').value = job.schedule.type;
+      $('routine-time').value = job.schedule.time || '11:00';
+      $('routine-hours').value = job.schedule.hours || 6;
+      for (const check of $('routine-days').querySelectorAll('input')) check.checked = (job.schedule.days || []).includes(Number(check.value));
+      $('routine-network').checked = job.allowNetwork === true;
+      $('routine-enabled').checked = job.enabled === true;
+      $('routine-delivery').value = job.delivery === 'both' ? 'both' : 'today';
+    }
+    syncRoutineSchedule();
+    feedback('routine-feedback');
+    updateRoutineControls();
+    $('routine-name').focus();
+  }
+
+  function readRoutineForm() {
+    const type = $('routine-type').value;
+    const schedule = type === 'interval' ? { type, hours: Number($('routine-hours').value) } : { type, time: $('routine-time').value };
+    if (type === 'interval' && (!Number.isInteger(schedule.hours) || schedule.hours < 1 || schedule.hours > 168)) throw new Error('间隔须为 1–168 的整数小时。');
+    if (type === 'weekly') {
+      schedule.days = [...$('routine-days').querySelectorAll('input:checked')].map((input) => Number(input.value));
+      if (!schedule.days.length) throw new Error('每周执行至少选择一天。');
+    }
+    const job = { name: $('routine-name').value.trim(), prompt: $('routine-prompt').value.trim(), schedule, allowNetwork: $('routine-network').checked, delivery: $('routine-delivery').value, enabled: $('routine-enabled').checked };
+    if (!job.name || !job.prompt) throw new Error('请填写名称和提示词。');
+    if (routineNetworkBlocked(job) && job.enabled) throw new Error(`${routineBlockedReason(job)} 请取消启用后保存停用定义。`);
+    return job;
+  }
+
+  async function saveRoutine(event) {
+    event.preventDefault();
+    if ($('routine-save').disabled || !$('routine-form').reportValidity()) return;
+    try {
+      const job = readRoutineForm();
+      await mutateRoutine('save', routineDraftId, job, routineDraftRevision);
+    } catch (error) { feedback('routine-feedback', errorText(error), true); }
+  }
+
+  async function mutateRoutine(action, id, definition, revision = state.routines?.revision) {
+    if (!canMutate() || !state.routines || routineBusy || routineUncertain) return;
+    const job = routineJob(id);
+    if (action !== 'save' && !job) return;
+    const target = action === 'save' ? definition : job;
+    const requiresNetwork = action === 'run' || action === 'toggle' && !job.enabled || action === 'save' && definition.enabled;
+    if (requiresNetwork && routineNetworkBlocked(target)) { notify(routineBlockedReason(target)); return; }
+    if (action === 'run' && routineRunning(id)) return;
+    routineBusy = true;
+    ++routineReadSequence;
+    updateRoutineControls();
+    let sent = false;
+    try {
+      const body = { revision };
+      if (action === 'save') body.job = definition;
+      if (action === 'toggle') body.job = { ...routineDefinition(job), enabled: !job.enabled };
+      if (action === 'delete') {
+        if (!await confirmAction('删除这项 Routine？', `将删除「${asText(job.name)}」的任务定义；已发送给模型的内容无法撤回。`, '确认删除', '保留任务')) return;
+      } else if (action === 'run' || action === 'save' && (definition.enabled || job?.enabled) || action === 'toggle' && body.job.enabled) {
+        const networkConsent = target.allowNetwork === true || action === 'save' && job?.enabled === true && job.allowNetwork === true;
+        const title = networkConsent ? '确认数据共享与独立联网？' : action === 'run' ? '手动运行这一次？' : '确认任务的数据使用？';
+        const sharing = `${routineSharing}\n${networkConsent ? routineNetworkSharing : '本地摘要不读取外部网页；不允许文件、Shell 或任务管理工具。'}`;
+        const effect = action === 'run' ? '本次运行不改变任务的启用状态。' : body.job.enabled ? '启用后将按计划重复处理上述内容。' : '保存后停用，不再定时执行。';
+        if (!await confirmAction(title, `${sharing}\n${effect}`, action === 'run' ? '确认并运行' : '确认并保存', '取消')) return;
+        body.confirmDataSharing = true;
+        if (networkConsent) body.confirmNetwork = true;
+      }
+      if (!canMutate() || revision !== state.routines?.revision) throw new Error('状态已经变化，未提交请求。请核对最新任务后再操作。');
+      if (requiresNetwork && routineNetworkBlocked(target)) throw new Error(routineBlockedReason(target));
+      if (action === 'run') body.requestId = crypto.randomUUID();
+      const previousIds = new Set(state.routineRuns.map((run) => asId(run.id)));
+      if (job?.lastRun) previousIds.add(asId(job.lastRun.id));
+      const path = `/api/routines${id ? `/${encodeURIComponent(id)}` : ''}${action === 'run' ? '/run' : ''}`;
+      sent = true;
+      const result = await api(path, { method: action === 'delete' ? 'DELETE' : 'POST', body });
+      ++refreshSequence;
+      ++routineReadSequence;
+      if (action === 'run') {
+        if (result?.accepted !== true) throw new Error('未收到明确受理结果，请刷新状态核对。');
+        routineAwaiting.set(id, { at: Date.now(), ids: previousIds });
+        notify('任务已受理，正在等待结果；不会重复提交。');
+      } else {
+        const snapshot = result?.routines || result;
+        if (!Array.isArray(snapshot?.jobs) || !(snapshot.revision === null || typeof snapshot.revision === 'string')) throw new Error('保存结果未包含任务快照，请刷新状态核对。');
+        applyRoutineSnapshot(snapshot);
+        if (action === 'save') {
+          routineDraftDirty = false;
+          routineDraftBlocked = false;
+          routineDraftId = '';
+          routineDraftRevision = state.routines.revision;
+          $('routine-form').reset();
+          $('routine-form-title').textContent = '新建 Routine';
+          syncRoutineSchedule();
+        }
+        notify(action === 'delete' ? '任务已删除。' : '任务已保存。');
+      }
+      feedback('routine-feedback', action === 'run' ? '已受理 · 结果通过状态刷新更新。' : '已更新任务列表。');
+    } catch (error) {
+      routineDraftBlocked ||= action === 'save';
+      routineUncertain = sent && (error.name === 'TimeoutError' || error instanceof TypeError || !error.status || error.status >= 500);
+      feedback('routine-feedback', `${errorText(error)} 草稿保留，仅刷新核对，不会自动重复提交。`, true);
+      await readRoutineState(true);
+    } finally {
+      routineBusy = false;
+      renderRoutines();
+    }
+  }
+
+  function safeRoutineUrl(value) {
+    if (typeof value !== 'string' || !/^https?:\/\//i.test(value) || /[\s\\\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(value)) return '';
+    try {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || value.split('/')[2].includes('@')) return '';
+      const host = url.hostname.toLowerCase().replace(/\.$/, '');
+      const labels = host.split('.');
+      // URL 会将十六进制、整数及缩写 IPv4 规范化；数字顶级域与 IPv6 都不放行。
+      if (host.length > 253 || labels.length < 2 || !/^[a-z][a-z0-9-]*$/i.test(labels.at(-1))) return '';
+      if (labels.some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) return '';
+      if (/(^|\.)(localhost|localdomain|local|internal|lan|home)$/.test(host)) return '';
+      return url.href;
+    } catch { return ''; }
+  }
+
+  function routineSourceLink(value) {
+    const href = safeRoutineUrl(value);
+    if (!href) return element('p', 'field-help', '原始链接不可用（仅支持公开 HTTP(S) 域名地址）');
+    const link = element('a', 'routine-source-link', `原始链接：${asText(value)}`);
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.referrerPolicy = 'no-referrer';
+    return link;
+  }
+
+  function buildRoutineRun(run) {
+    const card = element('article', 'routine-run');
+    card.dataset.runId = asId(run.id);
+    const heading = element('h4');
+    const meta = element('p', 'field-help');
+    const windowLabel = element('p', 'field-help');
+    const topics = element('p', 'field-help');
+    const fallback = element('p', 'field-help');
+    const outcome = element('p', 'field-help');
+    const body = element('p', 'entry-text');
+    const overview = element('details', 'routine-overview');
+    overview.append(element('summary', '', '查看运行总摘要'));
+    const items = element('div', 'routine-items');
+    const reason = element('p', 'field-help');
+    const details = element('details', 'routine-sources');
+    const summary = element('summary', '', '查看依据与来源');
+    const sources = element('div', 'routine-source-list');
+    const retry = element('button', 'text-button', '重新读取依据与来源');
+    retry.type = 'button';
+    retry.hidden = true;
+    let loading = false;
+    let loaded = false;
+    async function load() {
+      if (loading || loaded) return;
+      loading = true;
+      retry.hidden = true;
+      sources.replaceChildren(element('p', 'field-help', '正在读取依据与来源…'));
+      try {
+        const detail = await api(`/api/routine-runs/${encodeURIComponent(card.dataset.runId)}`);
+        if (!detail || asId(detail.id) !== card.dataset.runId || !Array.isArray(detail.sources)) throw new Error('本次运行的依据与来源尚未就绪。');
+        sources.replaceChildren();
+        for (const source of detail.sources) {
+          if (!source || typeof source.text !== 'string' && source.kind !== 'web') continue;
+          const item = element('div', 'routine-source');
+          const kinds = { journal: 'Journal', todo: '待办', message: '对话', reflection: '回顾', web: '网页' };
+          item.append(element('p', 'field-help', `${Object.hasOwn(kinds, source.kind) ? kinds[source.kind] : '本地记录'} · ${dateLabel(source.time, true)} · ${asId(source.sourceId) || asId(source.id)}`));
+          if (source.kind === 'web') item.append(element('h5', '', asText(source.title) || '未提供标题'));
+          if (source.text) item.append(element('p', 'entry-text', asText(source.text)));
+          if (source.kind === 'web') item.append(routineSourceLink(source.url));
+          sources.append(item);
+        }
+        if (!sources.childElementCount) sources.append(element('p', 'field-help', '没有保存的依据与来源。'));
+        loaded = detail.status !== 'running';
+        retry.hidden = loaded;
+      } catch (error) {
+        sources.replaceChildren(element('p', 'form-feedback is-error', errorText(error)));
+        retry.hidden = false;
+      } finally { loading = false; }
+    }
+    details.append(summary, sources, retry);
+    details.addEventListener('toggle', () => { if (details.open) void load(); });
+    retry.addEventListener('click', () => void load());
+    card.append(heading, meta, windowLabel, topics, fallback, outcome, body, overview, items, reason, details);
+    card.routineView = { heading, meta, windowLabel, topics, fallback, outcome, body, overview, items, reason };
+    return card;
+  }
+
+  function syncRoutineRuns(list, runs) {
+    const existing = new Map([...list.children].map((node) => [node.dataset.runId, node]));
+    for (const [index, run] of runs.entries()) {
+      const id = asId(run.id);
+      const card = existing.get(id) || buildRoutineRun(run);
+      existing.delete(id);
+      const view = card.routineView;
+      const signature = JSON.stringify(run);
+      if (card.routineSignature !== signature) {
+        view.heading.textContent = asText(run.jobName) || 'Routine';
+        view.meta.textContent = `${routineStatusLabels[run.status]} · ${dateLabel(run.startedAt)} · 任务版本 ${run.jobVersion ?? '—'}${Number.isFinite(run.durationMs) ? ` · ${(run.durationMs / 1000).toFixed(1)} 秒` : ''}${run.deliveredAt ? ` · 投递于 ${dateLabel(run.deliveredAt)}` : ''}`;
+        view.windowLabel.textContent = `时间窗口（本地时间）：${dateLabel(run.start, true)} — ${dateLabel(run.end, true)}`;
+        const topics = Array.isArray(run.topics) ? run.topics.filter((topic) => typeof topic === 'string' && topic.trim()) : [];
+        view.topics.textContent = topics.length ? `话题：${topics.join('、')}` : '';
+        view.topics.hidden = !topics.length;
+        view.fallback.textContent = run.topicFallback === true ? '本次使用兜底话题（如无可用本地记录），不代表搜索已成功。' : '';
+        view.fallback.hidden = !view.fallback.textContent;
+        const items = Array.isArray(run.items) ? run.items.filter((item) => item && typeof item === 'object') : [];
+        view.outcome.textContent = run.status === 'silent' && Array.isArray(run.items) && !items.length && topics.length ? '搜索后无值得推荐的资讯 · 未投递' : '';
+        view.outcome.hidden = !view.outcome.textContent;
+        view.body.textContent = asText(run.summary);
+        view.body.hidden = !view.body.textContent;
+        view.overview.hidden = !items.length || !view.body.textContent;
+        if (items.length) view.overview.append(view.body);
+        else card.insertBefore(view.body, view.overview);
+        view.items.replaceChildren();
+        view.items.hidden = !items.length;
+        for (const item of items) {
+          const article = element('article', 'routine-item');
+          article.append(element('h5', '', asText(item.title) || '未提供标题'),
+            element('p', 'field-help', `发布时间：${dateLabel(item.publishedAt, true)}${asId(item.sourceId) ? ` · 来源 ${asId(item.sourceId)}` : ''}`),
+            element('p', 'entry-text', asText(item.summary) || '未提供摘要'), routineSourceLink(item.url));
+          view.items.append(article);
+        }
+        view.reason.textContent = [asText(run.reason), asText(run.error)].filter(Boolean).join(' · ');
+        view.reason.hidden = !view.reason.textContent;
+        card.dataset.status = run.status;
+        card.routineSignature = signature;
+      }
+      if (list.children[index] !== card) list.insertBefore(card, list.children[index] || null);
+    }
+    for (const card of existing.values()) card.remove();
+  }
+
+  async function loadRoutineHistory(id, force = false) {
+    const view = routineCards.get(id);
+    if (!view || view.loading || !view.history.open) return;
+    const job = routineJob(id);
+    const signature = JSON.stringify([job?.lastRun, state.routineRuns.filter((run) => asId(run.jobId) === id)]);
+    if (!force && view.historySignature === signature) return;
+    view.loading = true;
+    view.historyFeedback.textContent = '正在读取最近 20 次运行…';
+    view.historyRetry.hidden = true;
+    try {
+      const result = await api(`/api/routines/${encodeURIComponent(id)}/history`);
+      if (!Array.isArray(result?.runs)) throw new Error('未能读取运行历史。');
+      const runs = routineRunsFrom(result.runs);
+      syncRoutineRuns(view.historyList, runs);
+      view.historyFeedback.textContent = runs.length ? `最近 ${runs.length} 次 · 每次可查看依据` : '还没有运行记录。';
+      view.historySignature = signature;
+    } catch (error) {
+      view.historyFeedback.textContent = errorText(error);
+      view.historyRetry.hidden = false;
+      view.historySignature = signature;
+    } finally { view.loading = false; }
+  }
+
+  function buildRoutineCard(job) {
+    const id = asId(job.id);
+    const card = element('article', 'glass-card routine-card');
+    card.dataset.jobId = id;
+    const header = element('div', 'routine-card-header');
+    const title = element('h3');
+    const switchLabel = element('label', 'routine-switch');
+    const switchText = element('span');
+    const toggle = element('input');
+    toggle.type = 'checkbox';
+    toggle.setAttribute('role', 'switch');
+    toggle.dataset.action = 'routine-toggle';
+    switchLabel.append(switchText, toggle);
+    header.append(title, switchLabel);
+    const schedule = element('p', 'field-help');
+    const next = element('p', 'field-help');
+    const last = element('p', 'field-help');
+    const blocked = element('p', 'routine-blocked field-help');
+    const actions = element('div', 'routine-actions');
+    const edit = actionButton('编辑', 'routine-edit', id);
+    const remove = actionButton('删除', 'routine-delete', id, 'text-button danger-text');
+    const run = actionButton('手动运行', 'routine-run', id, 'secondary-button');
+    actions.append(edit, remove, run);
+    const history = element('details', 'archive-section routine-history');
+    const historySummary = element('summary', '', '最近 20 次运行');
+    const historyFeedback = element('p', 'field-help');
+    const historyList = element('div', 'entry-list');
+    const historyRetry = element('button', 'text-button', '重新读取历史');
+    historyRetry.type = 'button';
+    historyRetry.hidden = true;
+    history.append(historySummary, historyFeedback, historyList, historyRetry);
+    history.addEventListener('toggle', () => { if (history.open) void loadRoutineHistory(id, true); });
+    historyRetry.addEventListener('click', () => void loadRoutineHistory(id, true));
+    edit.addEventListener('click', () => void editRoutine(id));
+    remove.addEventListener('click', () => void mutateRoutine('delete', id));
+    run.addEventListener('click', () => void mutateRoutine('run', id));
+    toggle.addEventListener('change', () => { toggle.checked = routineJob(id)?.enabled === true; void mutateRoutine('toggle', id); });
+    card.append(header, schedule, next, last, blocked, actions, history);
+    const view = { card, title, schedule, next, last, blocked, toggle, switchText, edit, remove, run, history, historyFeedback, historyList, historyRetry };
+    routineCards.set(id, view);
+    return view;
+  }
+
+  function renderRoutines() {
+    const capability = state.routineCapability;
+    $('routine-capability').textContent = `${capability.network ? '联网接线可用' : '联网接线不可用'} · ${capability.verified ? '曾成功搜索（宿主报告）' : '尚无成功搜索验证'}`;
+    $('routine-capability-detail').textContent = `${capability.message} ${capability.network ? '接线可用不保证实际搜索成功；默认任务仍停用，由你确认后启用。' : '联网任务不能启用或手动运行，但可停用已有任务、保存停用定义；不会替换为本地摘要。'}`;
+    $('routine-network-label').textContent = `允许联网 · ${capability.network ? '接线可用' : '当前不可用'}`;
+    $('routine-network-help').textContent = `${capability.network ? '确认后可独立联网，无本地记录时可用兜底话题。' : '当前能力不支持联网，可勾选并保存停用定义。'} 仅抽象话题词发给 Harness 搜索提供方，可能额外收费；执行只允许公开网页匿名 GET。`;
+    $('routine-status').textContent = routinePollError || (routineUncertain ? '上次请求结果尚未确认，请刷新状态核对后再操作。' : '时间按本机时区；电脑唤醒后最多补跑最近一次。');
+    const jobs = state.routines?.jobs || [];
+    const disabled = jobs.filter((job) => !job.enabled);
+    $('routine-count').textContent = `${jobs.length - disabled.length} 项已启用`;
+    $('routine-disabled-summary').textContent = `已停用 · ${disabled.length}${disabled.length ? `（${disabled.slice(0, 2).map((job) => asText(job.name)).join('、')}${disabled.length > 2 ? '…' : ''}）` : ''}${disabled.some((job) => job.allowNetwork) ? capability.network ? ' · 联网任务需自行启用' : ' · 联网能力不可用' : ''}`;
+    const ids = new Set(jobs.map((job) => asId(job.id)));
+    for (const [id, view] of routineCards) if (!ids.has(id)) { view.card.remove(); routineCards.delete(id); }
+    for (const list of [$('routine-list'), $('routine-disabled-list')]) {
+      for (const child of [...list.children]) if (!child.dataset.jobId) child.remove();
+    }
+    for (const job of jobs) {
+      const id = asId(job.id);
+      const view = routineCards.get(id) || buildRoutineCard(job);
+      const signature = JSON.stringify([job, capability]);
+      if (view.signature !== signature) {
+        view.title.textContent = asText(job.name);
+        view.schedule.textContent = `${routineScheduleLabel(job.schedule)} · ${job.delivery === 'both' ? 'Today + 对话独立事件' : 'Today'} · ${job.allowNetwork ? '独立联网' : '本地摘要'}`;
+        view.next.textContent = `下次：${!job.enabled ? '已停用，不定时执行' : routineNetworkBlocked(job) ? routineBlockedReason(job) : job.nextRun ? dateLabel(job.nextRun, true) : '等待宿主安排'}`;
+        view.last.textContent = job.lastRun ? `最近：${routineStatusLabels[job.lastRun.status] || '未知状态'} · ${dateLabel(job.lastRun.startedAt)}${job.lastRun.summary ? ` · ${excerpt(asText(job.lastRun.summary), 100)}` : ''}` : '最近：尚未运行';
+        view.blocked.textContent = routineBlockedReason(job);
+        view.blocked.hidden = !view.blocked.textContent;
+        view.signature = signature;
+      }
+      const list = job.enabled ? $('routine-list') : $('routine-disabled-list');
+      if (view.card.parentElement !== list) list.append(view.card);
+      if (currentTab === 'routine' && !document.hidden && view.history.open) void loadRoutineHistory(id);
+    }
+    if (!$('routine-list').childElementCount) $('routine-list').append(!hasState ? loadingState('sun') : emptyState(state.routines ? '还没有启用的约定' : '当前服务尚未提供 Routine', state.routines ? '在上方保存任务，或展开下方已停用任务；默认资讯卡不会自动联网。' : '兼容旧版状态，不尝试写入；现有 Journal、Todo 和设置仍可使用。', 'sun'));
+    if (!$('routine-disabled-list').childElementCount) $('routine-disabled-list').append(element('p', 'field-help', '暂无停用任务；这里只展示服务实际返回的定义。'));
+    const delivered = state.routineRuns.filter((run) => run.status === 'success' && run.deliveredAt && ['today', 'both'].includes(run.delivery));
+    $('today-routine-section').hidden = !state.routines && !delivered.length;
+    syncRoutineRuns($('today-routine-list'), delivered);
+    if (!delivered.length) $('today-routine-list').append(element('p', 'field-help', '暂时没有成功投递的摘要。'));
+    const chatEvents = delivered.filter((run) => run.delivery === 'both');
+    $('routine-chat-events').hidden = !chatEvents.length;
+    syncRoutineRuns($('routine-chat-list'), chatEvents);
+    updateRoutineControls();
+  }
+
+  async function readRoutineState(force = false) {
+    if (routinePolling || booting || restartInFlight || !hasState) return false;
+    if (!force && (routineBusy || statusRefreshing || settingsPolling || Date.now() - routineLastRead < 4800)) return false;
+    routinePolling = true;
+    const sequence = ++routineReadSequence;
+    updateRoutineControls();
+    try {
+      const payload = await api('/api/state');
+      if (sequence !== routineReadSequence) return false;
+      applyRoutineState(payload);
+      renderRoutines();
+      return true;
+    } catch (error) {
+      routinePollError = `刷新失败：${errorText(error)} 当前保留上次状态与草稿。`;
+      $('routine-status').textContent = routinePollError;
+      return false;
+    } finally {
+      routineLastRead = Date.now();
+      routinePolling = false;
+      updateRoutineControls();
+    }
+  }
+
+  async function rebaseRoutineDraft() {
+    if (routineBusy || routineUncertain) return;
+    if (!await readRoutineState(true) || !state.routines) return;
+    const revision = state.routines.revision;
+    const deleted = routineDraftId && !routineJob(routineDraftId);
+    if (!await confirmAction('沿用草稿并核对最新版本？', `草稿不会被覆盖，也不会自动提交。${deleted ? '原任务已删除，继续后草稿将作为新任务。' : '下次保存将以刚读取的版本为准，请先核对任务卡中的已保存内容。'}若上次请求超时，创建可能已经成功，请避免重复创建。`, '保留草稿继续编辑', '取消')) return;
+    if (revision !== state.routines?.revision) { notify('版本再次变化，请重新核对。'); return; }
+    if (deleted) { routineDraftId = ''; $('routine-form-title').textContent = '新建 Routine'; }
+    routineDraftRevision = revision;
+    routineDraftBlocked = false;
+    updateRoutineControls();
+  }
+
   function sortedReflections() {
     return [...state.reflections].sort((a, b) => (dateValue(b.createdAt || b.end)?.getTime() || 0) - (dateValue(a.createdAt || a.end)?.getTime() || 0));
   }
@@ -572,48 +1110,103 @@
     target.replaceChildren();
     const latest = sortedReflections()[0];
     if (!hasState) target.append(loadingState('sun'));
-    else if (!latest) target.append(emptyState('还没有每日回顾', '可在 Journal 的「每日回顾」中手动生成；自动回顾默认关闭。', 'sun'));
+    else if (!latest) target.append(emptyState('还没有每日回顾', '先在设置中保存并启用每日回顾，再等待自动执行或在 Journal 中手动补跑。', 'sun'));
     else {
       target.append(element('p', 'field-help', `${dateLabel(latest.start)} — ${dateLabel(latest.end)}`), element('p', 'entry-text', excerpt(latest.text, 220)));
     }
   }
+  function buildReflectionCard(entry) {
+    const card = element('article', 'glass-card reflection-card');
+    const prefix = `reflection-card-${++localSequence}`;
+    const heading = element('h3');
+    const meta = element('p', 'field-help');
+    const body = element('p', 'entry-text reflection-body');
+    const edit = element('button', 'text-button', '编辑这篇回顾');
+    edit.type = 'button';
+    const form = element('form', 'reflection-form');
+    const label = element('label', 'field-label', '回顾正文 · 本地 Markdown 原文');
+    const input = element('textarea', 'note-input reflection-input');
+    input.id = `${prefix}-input`;
+    label.htmlFor = input.id;
+    input.rows = 10;
+    input.spellcheck = false;
+    const conflict = element('p', 'form-feedback is-error');
+    conflict.setAttribute('role', 'status');
+    conflict.id = `${prefix}-conflict`;
+    input.setAttribute('aria-describedby', conflict.id);
+    const actions = element('div', 'form-actions');
+    const reload = element('button', 'secondary-button', '载入最新版本');
+    reload.type = 'button';
+    const save = element('button', 'primary-button', '保存回顾');
+    save.type = 'submit';
+    const message = element('p', 'form-feedback');
+    message.id = `${prefix}-feedback`;
+    message.setAttribute('role', 'status');
+    message.hidden = true;
+    actions.append(reload, save);
+    form.append(label, input, conflict, actions);
+    card.append(heading, meta, body, edit, form, message);
+    const view = { card, heading, meta, body, edit, form, input, conflict, reload, save, message, entry };
+    edit.addEventListener('click', () => {
+      reflectionDrafts.get(entry.id).editing = true;
+      renderReflections();
+      input.focus();
+    });
+    input.addEventListener('input', () => {
+      const draft = reflectionDrafts.get(entry.id);
+      draft.text = input.value;
+      draft.dirty = draft.text !== draft.baseline;
+      feedback(message.id);
+      updateControls();
+    });
+    form.addEventListener('submit', (event) => { event.preventDefault(); void saveRevision('reflection', entry.id); });
+    reload.addEventListener('click', () => void reloadRevision('reflection', entry.id));
+    return view;
+  }
+
   function renderReflections() {
-    const date = $('reflection-date').value;
-    const entries = sortedReflections().filter((entry) => !date || localDateKey(entry.end || entry.createdAt) === date);
-    if (!entries.some((entry) => entry.id === selectedReflectionId)) selectedReflectionId = entries[0]?.id || '';
-    const select = $('reflection-select');
-    select.replaceChildren();
-    if (!entries.length) select.append(element('option', '', '暂无回顾'));
-    for (const entry of entries) {
-      const option = element('option', '', `${dateLabel(entry.end || entry.createdAt, true)} · ${excerpt(entry.text.replace(/\s+/g, ' '), 35)}`);
-      option.value = entry.id;
-      select.append(option);
+    const entries = sortedReflections();
+    const visible = entries.slice(0, reflectionVisibleCount);
+    // 新回顾插入或外部删除后，仍保留正在编辑的卡片及其原 revision。
+    for (const [id, view] of reflectionCards) {
+      const draft = reflectionDrafts.get(id);
+      if (!visible.some((entry) => entry.id === id) && (draft.editing || draft.dirty || draft.awaiting || draft.saving)) visible.push(entries.find((entry) => entry.id === id) || view.entry);
     }
-    select.value = selectedReflectionId;
-    select.disabled = !entries.length;
+    visible.sort((a, b) => (dateValue(b.createdAt || b.end)?.getTime() || 0) - (dateValue(a.createdAt || a.end)?.getTime() || 0));
+    const list = $('reflection-list');
+    for (const [id, view] of reflectionCards) {
+      if (visible.some((entry) => entry.id === id)) continue;
+      view.card.remove();
+      feedbackMessages.delete(view.message.id);
+      reflectionCards.delete(id);
+    }
+    visible.forEach((entry, index) => {
+      if (!reflectionDrafts.has(entry.id)) reflectionDrafts.set(entry.id, newDraft(entry));
+      if (!reflectionCards.has(entry.id)) reflectionCards.set(entry.id, buildReflectionCard(entry));
+      const view = reflectionCards.get(entry.id);
+      const draft = reflectionDrafts.get(entry.id);
+      view.entry = entry;
+      if (list.children[index] !== view.card) list.insertBefore(view.card, list.children[index] || null);
+      view.heading.textContent = `${dateLabel(entry.end || entry.createdAt, true)} · 每日回顾`;
+      view.meta.textContent = `${dateLabel(entry.start, true)} — ${dateLabel(entry.end, true)} · 生成于 ${dateLabel(entry.createdAt, true)} · revision ${asId(entry.revision) || '未提供'}`;
+      view.body.textContent = entry.text;
+      view.body.hidden = draft.editing;
+      view.edit.hidden = draft.editing;
+      view.form.hidden = !draft.editing;
+      if (view.input.value !== draft.text) view.input.value = draft.text;
+      view.input.disabled = draft.saving || draft.awaiting;
+      view.conflict.textContent = draft.conflict ? '这篇回顾已被外部修改或删除。草稿和原 revision 保留；请复制需要的内容，再载入最新版本合并。' : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存；请刷新版本。' : '';
+      view.conflict.hidden = !view.conflict.textContent;
+      view.save.disabled = !canMutate() || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || !draft.text.trim();
+      view.save.textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存回顾';
+      view.reload.disabled = !canMutate() || draft.saving;
+      view.edit.disabled = !canMutate() || !validRevision(draft.revision);
+    });
     const empty = $('reflection-empty');
-    empty.replaceChildren();
-    empty.hidden = Boolean(selectedReflectionId);
-    $('reflection-detail').hidden = !selectedReflectionId;
-    if (!selectedReflectionId) {
-      empty.append(!hasState ? loadingState('sun') : emptyState('这一天，尚未留下回顾', !state.features.reflections ? '宿主尚未提供回顾接口，请更新后重载。' : date ? '换一个日期，或查看全部日期。' : '生成会调用模型并收费，你可以先继续随手记录。', 'sun'));
-      return;
-    }
-    const entry = entries.find((item) => item.id === selectedReflectionId);
-    if (!reflectionDrafts.has(entry.id)) reflectionDrafts.set(entry.id, newDraft(entry));
-    const draft = reflectionDrafts.get(entry.id);
-    $('reflection-meta').textContent = `${dateLabel(entry.start, true)} — ${dateLabel(entry.end, true)} · 生成于 ${dateLabel(entry.createdAt, true)} · revision ${asId(entry.revision) || '未提供'}`;
-    $('reflection-body').textContent = entry.text;
-    $('reflection-body').hidden = draft.editing;
-    $('reflection-edit').hidden = draft.editing;
-    $('reflection-form').hidden = !draft.editing;
-    if ($('reflection-input').value !== draft.text) $('reflection-input').value = draft.text;
-    $('reflection-input').disabled = draft.saving || draft.awaiting;
-    feedback('reflection-conflict', draft.conflict ? '检测到其他地方修改了这篇回顾。草稿仍保留；请复制需要的内容，再载入最新版本合并。' : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存；请刷新版本。' : '', true);
-    $('reflection-save').disabled = !canMutate() || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || !draft.text.trim();
-    $('reflection-save').textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存回顾';
-    $('reflection-reload').disabled = !canMutate() || draft.saving;
-    $('reflection-edit').disabled = !canMutate() || !validRevision(draft.revision);
+    empty.hidden = visible.length > 0;
+    if (!visible.length) empty.replaceChildren(!hasState ? loadingState('sun') : emptyState('尚未留下回顾', !state.features.reflections ? '宿主尚未提供回顾接口，请更新后重载。' : '先保存并启用每日回顾，再等待自动执行或手动补跑。', 'sun'));
+    $('reflection-count').textContent = `已显示 ${Math.min(reflectionVisibleCount, entries.length)} / ${entries.length} 条${visible.length > Math.min(reflectionVisibleCount, entries.length) ? ' · 另保留编辑卡片' : ''}`;
+    $('reflections-more').hidden = entries.length <= reflectionVisibleCount;
   }
 
   function buildProfileEditors() {
@@ -753,11 +1346,12 @@
   }
   function renderServices() {
     $('data-directory').textContent = state.dataDirectory || (hasState ? '宿主未提供数据路径' : '尚未读取');
-    $('host-open-hint').textContent = state.hostUrl ? '由本机服务打开实际宿主已认证地址；进入后使用宿主模型齿轮或连接器配置，不在此构造深链。' : '宿主未提供可展示地址；可点击尝试由本机服务打开。若失败，请使用你启动 Harness 时获得的原始地址。';
     $('background-state').textContent = pending.has('background') ? '正在处理请求' : !hasState ? '尚未读取' : offline ? '状态待核对' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.error ? '状态异常' : state.background.enabled ? '已启用（服务返回）' : '未启用';
     $('background-toggle').textContent = pending.has('background') ? '正在处理…' : state.background.enabled ? '停用' : '启用';
     feedback('background-error', state.background.error, true);
-    $('reflection-status').textContent = [state.settings.reflectionEnabled ? '自动回顾已开启 · 本地 05:00' : '自动回顾未开启', taskStatus(state.maintenance.reflection)].filter(Boolean).join(' · ');
+    const reflectionStatus = [!hasState ? '尚未读取每日回顾状态' : state.settings.reflectionEnabled ? '自动回顾已保存开启 · 本地 05:00' : '自动回顾未开启 · 需保存并启用后才能手动运行', offline ? '连接异常，当前为上次状态' : '', taskStatus(state.maintenance.reflection), reflectionReceipt?.waiting ? '手动请求最终结果待核对' : ''].filter(Boolean).join(' · ');
+    $('reflection-status').textContent = reflectionStatus;
+    $('settings-reflection-status').textContent = reflectionStatus;
     const results = state.maintenance.running === true ? ['有自动任务正在执行。'] : [];
     for (const [key, label] of [['reflection', '回顾'], ['update', '更新'], ['memory', '记忆候选']]) {
       const result = taskStatus(state.maintenance[key]);
@@ -811,7 +1405,7 @@
     }
     $('runtime-label').textContent = label;
     $('runtime-button').dataset.state = kind;
-    $('runtime-button').title = `${label} · 宿主连接不等于模型验证 · 查看运行状态`;
+    $('runtime-button').title = `${label} · 宿主连接不等于模型验证 · 打开设置数据与维护页`;
     $('runtime-button').setAttribute('aria-label', $('runtime-button').title);
     $('harness-badge').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '同进程插件' : '宿主未就绪';
     $('harness-installed').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '已安装 · 原生插件' : '宿主未就绪';
@@ -820,16 +1414,10 @@
     $('model-connected').textContent = !hasState ? '尚未读取' : offline ? '无法获取最新状态' : runtime.connected === true ? '宿主已连接（非模型网络验证）' : '宿主尚未连接';
     $('model-verified').textContent = verification;
     $('credential-source').textContent = credentialSource;
-    $('settings-credential-source').textContent = credentialSource;
-    $('settings-model-verified').textContent = verification;
-    for (const id of ['model-provider', 'settings-provider']) {
-      $(id).textContent = state.settings.provider || (hasState ? 'Harness 尚未配置' : '—');
-      $(id).title = $(id).textContent;
-    }
-    for (const id of ['model-name', 'settings-model']) {
-      $(id).textContent = state.settings.model || (hasState ? 'Harness 尚未配置' : '—');
-      $(id).title = $(id).textContent;
-    }
+    $('model-provider').textContent = state.settings.provider || (hasState ? 'Harness 尚未配置' : '—');
+    $('model-provider').title = $('model-provider').textContent;
+    $('model-name').textContent = state.settings.model || (hasState ? 'Harness 尚未配置' : '—');
+    $('model-name').title = $('model-name').textContent;
     $('settings-host-hint').textContent = !hasState
       ? '正在读取宿主配置。模型设置由 Harness 管理，打开或保存此设置不会连接模型或发送消息。'
       : offline ? '暂时无法读取最新宿主配置；请重新加载。'
@@ -864,25 +1452,35 @@
     return labels[status] || '';
   }
 
+  function renderAssistantContent(target, text) {
+    if (window.ClaudiaMarkdown) window.ClaudiaMarkdown.render(target, text);
+    else target.textContent = text;
+  }
+
   function renderChat(forceScroll = false) {
+    if (activeRun?.renderFrame) { cancelAnimationFrame(activeRun.renderFrame); activeRun.renderFrame = null; }
     const nearBottom = nearChatBottom();
     const list = $('message-list');
     list.replaceChildren();
     $('welcome').hidden = state.messages.length > 0;
     for (const message of state.messages) {
-      const article = element('article', `message${message.role === 'user' ? ' is-user' : ''}`);
+      const isEmailReview = message.source === 'email-review';
+      const article = element('article', `message${message.role === 'user' ? ' is-user' : ''}${isEmailReview ? ' is-email-review' : ''}`);
       const meta = element('div', 'message-meta');
       const name = message.role === 'user' ? '你' : message.role === 'assistant' ? displayName() : '系统消息';
       const nameLabel = element('span', 'display-name message-name', name);
       nameLabel.title = name;
       meta.append(nameLabel);
+      if (isEmailReview) meta.append(element('span', 'email-review-tag', '独立邮件分析'));
       if (dateValue(message.createdAt)) {
         const time = element('time', '', dateLabel(message.createdAt));
         time.dateTime = message.createdAt;
         meta.append(time);
       }
       const bubble = element('div', 'message-bubble', message.content);
+      if (message.role === 'assistant') renderAssistantContent(bubble, message.content);
       article.append(meta, bubble);
+      if (isEmailReview && message.role === 'assistant') article.append(element('p', 'email-review-boundary', '独立标题与发件人分析结果 · 这些字段不自动带入普通后续会话；不读取正文或附件，不自动发信、不访问链接。'));
       const label = messageStatus(message.status);
       if (label) article.append(element('p', 'message-status', label));
       list.append(article);
@@ -914,6 +1512,7 @@
     renderJournal();
     renderMemories();
     renderTodos();
+    renderRoutines();
     renderCandidates();
     renderTodayReflection();
     renderProfiles();
@@ -985,6 +1584,432 @@
     }
   }
 
+  function renderPlugins(payload) {
+    const packages = payload.packages.filter((plugin) => !plugin.name.startsWith('@deepseek-ai/') && plugin.name !== 'dsh-claudia' && !plugin.name.endsWith('/dsh-claudia'));
+    $('plugins-profile').textContent = payload.profile.trim() || '未知';
+    $('plugins-runtime').textContent = payload.runtimeAvailable ? '可直接观测' : '不可直接观测（不代表插件未加载）';
+    feedback('plugins-status', [payload.available ? `已读取正式 bundle 清单 · ${packages.length} 项非系统扩展` : '插件清单暂不可用', payload.message].filter(Boolean).join('。'), !payload.available);
+    const list = $('plugins-list');
+    list.replaceChildren();
+    $('plugins-empty').hidden = payload.available && packages.length > 0;
+    $('plugins-empty').textContent = payload.available ? '当前 profile 没有非系统扩展；系统扩展及 Claudia 自身不在此展示。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新或前往 Harness 查看。';
+    if (!payload.available) return;
+    const phases = { pending: '宿主等待就绪', active: '宿主已加载', failed: '宿主插件失败', loading: '宿主加载中', unloading: '宿主卸载中' };
+    for (const plugin of packages) {
+      const item = element('li', 'plugin-item');
+      const heading = element('div', 'plugin-heading');
+      heading.append(element('h4', '', plugin.name), element('span', 'plugin-version', `版本：${plugin.version?.trim() || '未知'}`));
+      const status = element('div', 'plugin-status');
+      status.append(
+        element('span', 'quiet-tag', plugin.installed ? '已安装' : '未确认安装'),
+        element('span', 'quiet-tag', plugin.enabled === false ? '宿主已停用' : plugin.enabled === true ? '宿主已启用（不代表已加载）' : '宿主启停状态未知'),
+        element('span', plugin.phase === 'failed' ? 'quiet-tag is-warning' : 'quiet-tag', plugin.phase === null ? '运行阶段未直接观测' : phases[plugin.phase])
+      );
+      item.append(heading, status);
+      list.append(item);
+    }
+  }
+
+  async function loadPlugins() {
+    if (!$('settings-dialog').open || settingsTab !== 'plugins') return;
+    const sequence = ++pluginsReadSequence;
+    $('plugins-refresh').disabled = true;
+    $('plugins-refresh').textContent = '读取中…';
+    $('plugins-list').setAttribute('aria-busy', 'true');
+    $('plugins-list').replaceChildren();
+    $('plugins-empty').hidden = true;
+    $('plugins-profile').textContent = '正在读取…';
+    $('plugins-runtime').textContent = '正在读取…';
+    feedback('plugins-status', '正在读取当前 profile 的正式 bundle 清单…');
+    try {
+      const payload = await api('/api/plugins');
+      if (sequence !== pluginsReadSequence) return;
+      if (!payload || typeof payload.available !== 'boolean' || typeof payload.profile !== 'string'
+        || typeof payload.runtimeAvailable !== 'boolean' || typeof payload.message !== 'string' || !Array.isArray(payload.packages)
+        || !payload.packages.every((plugin) => plugin && typeof plugin.name === 'string'
+          && (plugin.version === null || typeof plugin.version === 'string') && typeof plugin.installed === 'boolean'
+          && (plugin.enabled === null || typeof plugin.enabled === 'boolean')
+          && [null, 'pending', 'active', 'failed', 'loading', 'unloading'].includes(plugin.phase))) {
+        throw new Error('插件清单数据格式不完整，请检查服务版本后刷新。');
+      }
+      renderPlugins(payload);
+    } catch (error) {
+      if (sequence !== pluginsReadSequence) return;
+      $('plugins-profile').textContent = '未能读取';
+      $('plugins-runtime').textContent = '未能读取';
+      feedback('plugins-status', error.name === 'TimeoutError' ? '读取插件清单超时，请手动刷新重试。' : `读取插件清单失败：${errorText(error)}`, true);
+      $('plugins-empty').textContent = '未显示插件清单，不能据此判断是否安装。';
+      $('plugins-empty').hidden = false;
+    } finally {
+      if (sequence === pluginsReadSequence) {
+        $('plugins-refresh').disabled = false;
+        $('plugins-refresh').textContent = '刷新插件';
+        $('plugins-list').setAttribute('aria-busy', 'false');
+      }
+    }
+  }
+
+  function validateEmail(payload) {
+    if (!payload || typeof payload.supported !== 'boolean' || !(payload.revision === null || typeof payload.revision === 'string')
+      || !(payload.savedEnabled === null || typeof payload.savedEnabled === 'boolean')
+      || !(payload.enabled === null || typeof payload.enabled === 'boolean')
+      || !(payload.phase === null || typeof payload.phase === 'string')
+      || typeof payload.needsRestart !== 'boolean' || typeof payload.message !== 'string') throw new Error('邮件状态格式不完整，请核对后端版本后刷新。');
+    return payload;
+  }
+
+  function emailLoaded() { return ['active', 'loaded'].includes(emailSnapshot?.phase); }
+  function emailCanToggle() {
+    return canMutate() && !emailReviewPreparing && !emailBusy && !emailReading && !emailAccountBusy && !emailAccountReading && !emailError && emailSnapshot?.supported === true
+      && typeof emailSnapshot.savedEnabled === 'boolean' && typeof emailSnapshot.enabled === 'boolean'
+      && typeof emailSnapshot.revision === 'string' && emailSnapshot.revision.length > 0
+      && !['failed', 'error'].includes(emailSnapshot.phase);
+  }
+
+  function renderEmail() {
+    const snapshot = emailSnapshot;
+    const known = !emailError && !emailReading && typeof snapshot?.savedEnabled === 'boolean';
+    const input = $('email-enabled');
+    input.checked = snapshot?.savedEnabled === true;
+    input.indeterminate = !known;
+    input.setAttribute('aria-checked', known ? String(input.checked) : 'mixed');
+    input.disabled = !emailCanToggle();
+    $('email-status').textContent = emailBusy ? '等待确认 / 保存中' : emailReading ? '正在读取…' : emailError ? '状态待核对'
+      : !snapshot ? '尚未读取' : !snapshot.supported ? '当前不支持' : !known ? '保存状态未知' : snapshot.savedEnabled ? '已保存开启' : '已保存关闭';
+    $('email-status').classList.toggle('is-error', Boolean(emailError));
+    const enabled = typeof snapshot?.enabled === 'boolean' ? snapshot.enabled ? '已启用' : '已停用' : '未知';
+    $('email-runtime').textContent = `宿主实际启停：${enabled}；加载阶段：${snapshot?.phase || '未直接观测'}${emailError || emailReading ? '（上次读取，待核对）' : ''}。启用不等于账号已连接。`;
+    $('email-message').textContent = emailError || snapshot?.message || '';
+    $('email-message').classList.toggle('is-error', Boolean(emailError));
+    $('email-refresh').disabled = emailReading || emailBusy || emailAccountBusy || emailAccountReading || restartInFlight || emailReviewPreparing;
+    $('email-restart-actions').hidden = snapshot?.needsRestart !== true;
+    const blocked = restartBlocked();
+    $('email-restart').disabled = Boolean(blocked);
+    $('email-restart-hint').textContent = blocked || '已保存，重启后生效；点击后仍需确认，不会自动重启。';
+    $('email-loaded-hint').textContent = '无需打开宿主即可使用上方账号表单。此入口仅供高级管理，打不开不影响在此填写；宿主页面可能检查已配置账号。'
+      + (emailLoaded() && !emailError ? '邮件扩展已加载，不代表邮箱已连接。' : '尚未确认邮件扩展已加载，实际状态以上方 Loader 报告为准。');
+    $('email-open-harness').disabled = !canMutate() || emailBusy || emailAccountBusy || pending.has('open-harness');
+  }
+
+  async function loadEmail() {
+    if (!$('settings-dialog').open || settingsTab !== 'plugins' || emailReading || emailBusy || emailAccountBusy || restartInFlight || emailReviewPreparing) return;
+    emailReading = true;
+    renderEmail();
+    try {
+      emailSnapshot = validateEmail(await api('/api/email'));
+      emailError = '';
+    } catch (error) {
+      emailError = `邮件状态读取失败：${errorText(error)} 不能据此判断开关已关闭；请刷新核对。`;
+    } finally {
+      emailReading = false;
+      renderEmail();
+    }
+  }
+
+  async function toggleEmail() {
+    const enabled = $('email-enabled').checked;
+    if (!emailCanToggle()) { renderEmail(); return; }
+    const revision = emailSnapshot.revision;
+    emailBusy = true;
+    pending.add('email');
+    updateControls();
+    feedback('email-feedback');
+    try {
+      const approved = await confirmAction(enabled ? '在宿主中开启邮件扩展？' : '在宿主中关闭邮件扩展？',
+        `${enabled ? '开启可能让宿主其他 Agent 获得邮件工具，并对已有账户自动检查邮件。' : '关闭会影响宿主邮件工具与已有账户自动检查。'}\nClaudia 普通聊天仍无邮件权限。本次不会替你配置邮箱。\n单独保存，重启生效；不提交其它设置草稿，也不会自动重启。`, enabled ? '确认单独开启' : '确认单独关闭', '取消');
+      if (!approved) { feedback('email-feedback', '已取消，恢复原开关；未提交任何设置。'); return; }
+      if (!canMutate() || emailSnapshot.revision !== revision) throw new Error('连接或邮件版本已变化，未提交；请刷新邮件状态。');
+      emailSnapshot = validateEmail(await api('/api/email', { method: 'POST', body: { enabled, revision, confirmHostTools: true } }));
+      emailError = '';
+      feedback('email-feedback', emailSnapshot.savedEnabled === enabled ? `邮件开关已单独保存。${emailSnapshot.needsRestart ? '需重启生效，可使用下方重启按钮。' : '实际启停以宿主报告为准。'}其它设置草稿未提交。` : '服务已返回状态，但未确认保存为所选值。请核对状态后再操作。', emailSnapshot.savedEnabled !== enabled);
+    } catch (error) {
+      emailError = `${errorText(error)} 保存结果待核对，请刷新邮件状态；不会自动重试或冒充关闭。`;
+      feedback('email-feedback', emailError, true);
+    } finally {
+      emailBusy = false;
+      pending.delete('email');
+      updateControls();
+      if (!$('email-enabled').disabled) $('email-enabled').focus({ preventScroll: true });
+    }
+  }
+
+  function validQQAddress(user) {
+    return /^[a-z0-9][a-z0-9._-]{0,99}@(qq\.com|foxmail\.com)$/i.test(user);
+  }
+
+  function validateEmailAccount(payload) {
+    if (!payload || typeof payload.supported !== 'boolean' || !(payload.revision === null || typeof payload.revision === 'string')
+      || typeof payload.user !== 'string' || typeof payload.passwordSet !== 'boolean' || payload.applies !== 'live'
+      || typeof payload.message !== 'string' || payload.supported && (payload.user && !validQQAddress(payload.user)
+        || payload.passwordSet && !payload.user)) throw new Error('邮箱配置状态格式不完整。');
+    const compatible = payload.compatible === true;
+    if (compatible && (typeof payload.receiveEnabled !== 'boolean' || typeof payload.sendEnabled !== 'boolean'
+      || typeof payload.configured !== 'boolean' || payload.supported && !asText(payload.revision))) throw new Error('邮箱权限状态格式不完整。');
+    // 旧版权限保持未知，不将缺失字段解释为禁发；只投影非敏感字段。
+    return { supported: payload.supported, revision: payload.supported ? payload.revision : null,
+      user: payload.supported ? payload.user : '', passwordSet: payload.supported && payload.passwordSet,
+      applies: 'live', message: payload.message, compatible,
+      configured: typeof payload.configured === 'boolean' ? payload.configured : Boolean(payload.supported && payload.user && payload.passwordSet),
+      receiveEnabled: compatible ? payload.receiveEnabled : null, sendEnabled: compatible ? payload.sendEnabled : null };
+  }
+
+  function hasEmailAccountDraft() {
+    return $('email-account-user').value !== (emailAccountSnapshot?.user || '') || $('email-account-password').value.length > 0
+      || emailAccountSnapshot?.compatible === true && ($('email-account-receive').checked !== emailAccountSnapshot.receiveEnabled
+        || $('email-account-send').checked !== emailAccountSnapshot.sendEnabled);
+  }
+
+  function discardEmailAccountDraft() {
+    $('email-account-password').value = '';
+    $('email-account-user').value = emailAccountSnapshot?.user || '';
+    $('email-account-receive').checked = emailAccountSnapshot?.compatible === true ? emailAccountSnapshot.receiveEnabled : true;
+    $('email-account-send').checked = emailAccountSnapshot?.compatible === true ? emailAccountSnapshot.sendEnabled : false;
+  }
+
+  function applyEmailAccount(snapshot) {
+    emailAccountSnapshot = snapshot;
+    discardEmailAccountDraft();
+    if (!snapshot.compatible) emailAccountEditing = false;
+    emailAccountError = '';
+  }
+
+  function openEmailAccountEditor() {
+    if ($('email-account-edit').disabled) return;
+    emailAccountEditing = true;
+    updateControls();
+    $('email-account-user').focus();
+  }
+
+  function emailAccountCanSave() {
+    return $('settings-dialog').open && canMutate() && !emailBusy && !emailAccountBusy && !emailAccountReading
+      && !settingsSaving && !settingsClosing && !confirmResolver && !restartConfirming && !emailAccountNeedsReadback && !emailAccountError
+      && !emailReviewPreparing && emailAccountEditing && emailAccountSnapshot?.supported === true
+      && emailAccountSnapshot.compatible === true && hasEmailAccountDraft();
+  }
+
+  function renderEmailAccount() {
+    const snapshot = emailAccountSnapshot;
+    const blocked = emailAccountBusy || emailAccountReading || emailBusy || settingsSaving || settingsClosing || restartInFlight || emailReviewPreparing;
+    const editable = snapshot?.supported === true && snapshot.compatible === true;
+    const stale = Boolean(emailAccountError || emailAccountReading || emailAccountNeedsReadback);
+    $('email-account-fields').disabled = blocked || !canMutate() || !editable || Boolean(emailAccountError) || emailAccountNeedsReadback;
+    $('email-account-form').hidden = !emailAccountEditing;
+    $('email-account-form').setAttribute('aria-busy', String(emailAccountBusy || emailAccountReading));
+    $('email-account-edit').hidden = emailAccountEditing;
+    $('email-account-edit').disabled = blocked || !canMutate() || !editable || Boolean(emailAccountError) || emailAccountNeedsReadback;
+    $('email-account-edit').setAttribute('aria-expanded', String(emailAccountEditing));
+    $('email-account-card').hidden = !snapshot?.user;
+    $('email-account-card-title').textContent = stale ? '上次读取配置 · 待核对' : snapshot?.configured ? '已保存配置' : '已保存账号 · 配置未完整';
+    $('email-account-card-user').textContent = snapshot?.user || '';
+    $('email-account-card-receive').textContent = snapshot?.compatible !== true ? '未知 · 旧版不支持权限控制' : snapshot.receiveEnabled ? '已开启' : '已关闭';
+    $('email-account-card-send').textContent = snapshot?.compatible !== true ? '未知 · 不能确认已禁发' : snapshot.sendEnabled ? '已开启（本操作不发信）' : '已关闭';
+    $('email-account-save').disabled = !emailAccountCanSave();
+    $('email-account-save').textContent = emailAccountBusy ? '等待确认 / 处理中…' : '保存邮箱配置';
+    $('email-account-cancel').disabled = blocked || !emailAccountEditing;
+    $('email-account-reload').disabled = blocked || booting;
+    const reviewDisabled = !emailReviewCanStart() || emailReviewPreparing;
+    $('email-review-days').disabled = blocked || !canMutate() || !editable || stale;
+    $('email-review-prompt').disabled = blocked || !canMutate() || !editable || stale;
+    $('email-review').disabled = reviewDisabled;
+    $('email-review').setAttribute('aria-busy', String(emailReviewPreparing));
+    $('email-review').title = !snapshot?.compatible ? '需升级 dsh-email 0.11.0-claudia.2 兼容版'
+      : !snapshot.configured ? '请先单独保存完整邮箱配置' : !snapshot.receiveEnabled ? '请先编辑并保存开启收信权限'
+        : stale ? '请先重新载入并核对邮箱配置' : '先预览范围与模型，人工确认后分析';
+    $('email-account-status').textContent = emailAccountBusy ? '邮箱独立操作进行中，请等待。' : emailAccountReading ? '正在读取邮箱配置…'
+      : emailAccountNeedsReadback ? '保存结果待核对：已清空授权码，保存已锁定，请确认后重新载入。'
+        : emailAccountError ? '邮箱状态未确认，请重新载入。' : !snapshot ? '首次进入插件页后读取账号配置。'
+          : !snapshot.supported ? '当前宿主不支持此账号表单。' : !snapshot.compatible ? '需升级 dsh-email 0.11.0-claudia.2 兼容版，才能保存收发权限或分析邮件。旧 0.11.0 仅展示账号，不能保证已禁发。'
+            : hasEmailAccountDraft() ? '邮箱草稿未保存；不会随下方“保存设置”提交。'
+              : snapshot.configured ? '已保存配置 · 连接未验证。点“编辑”修改，保存即生效，无需重启。' : '尚未完成邮箱配置。请点“编辑”填写并单独保存。';
+    $('email-account-status').classList.toggle('is-error', Boolean(emailAccountError || emailAccountNeedsReadback));
+    $('email-account-message').textContent = emailAccountError
+      ? [emailAccountError, snapshot?.supported === false ? snapshot.message : ''].filter(Boolean).join(' ')
+      : snapshot?.message || '';
+    $('email-account-message').classList.toggle('is-error', Boolean(emailAccountError));
+    $('email-account-secret-status').textContent = !snapshot || !snapshot.supported ? '授权码状态未知，不回填任何占位内容。'
+      : `${emailAccountError || emailAccountReading || emailAccountNeedsReadback ? '上次读取：' : ''}${snapshot.passwordSet ? '已有授权码，永不回显；同一邮箱留空可保留。' : '尚无已保存的授权码，请填写新授权码。'}`;
+  }
+
+  async function loadEmailAccount(replaceDraft = false) {
+    if (!$('settings-dialog').open || settingsTab !== 'plugins' || emailAccountReading || emailAccountBusy || emailBusy || restartInFlight || emailReviewPreparing) return;
+    if (!replaceDraft && (hasEmailAccountDraft() || emailAccountNeedsReadback)) {
+      feedback('email-account-feedback', emailAccountNeedsReadback
+        ? '上次保存结果待核对，不会自动重试。请点击“重新载入”并确认后读回；不会依据地址相同认定授权码保存成功。'
+        : '邮箱草稿及原保存基线已保留。刷新或再次进入不会覆盖；如需最新配置，请点击“重新载入”并确认放弃草稿。', emailAccountNeedsReadback);
+      renderEmailAccount();
+      return;
+    }
+    const sequence = ++emailAccountReadSequence;
+    const wasUncertain = emailAccountNeedsReadback;
+    emailAccountReading = true;
+    updateControls();
+    try {
+      const snapshot = validateEmailAccount(await api('/api/email/account'));
+      if (sequence !== emailAccountReadSequence || !$('settings-dialog').open) return;
+      if (hasEmailAccountDraft()) {
+        feedback('email-account-feedback', '读取期间检测到邮箱草稿，未覆盖输入或原保存基线。请明确确认后重新载入。');
+        return;
+      }
+      applyEmailAccount(snapshot);
+      emailAccountNeedsReadback = false;
+      feedback('email-account-feedback', wasUncertain
+        ? '已读回当前配置，但地址相同或“已有授权码”不能证明上次新授权码保存成功。如需确认替换，请重新输入授权码并主动保存；不会自动重试。'
+        : snapshot.supported ? '已载入当前配置；授权码不会回显，未检查收件箱或发送测试邮件。' : '', wasUncertain);
+    } catch {
+      if (sequence !== emailAccountReadSequence) return;
+      emailAccountError = '邮箱配置读取失败，请检查本机服务与接口版本后重新载入；不能据此判断账号或授权码不存在。';
+    } finally {
+      if (sequence === emailAccountReadSequence) { emailAccountReading = false; updateControls(); }
+    }
+  }
+
+  async function editEmailAccount(reload = false) {
+    if (emailAccountBusy || emailAccountReading || emailBusy || settingsSaving || settingsClosing || restartInFlight || confirmResolver || emailReviewPreparing) return;
+    emailAccountBusy = true;
+    pending.add('email-account-edit');
+    updateControls();
+    try {
+      if (!await confirmAction(reload ? '重新载入邮箱配置？' : '放弃邮箱草稿？',
+        `${reload ? '将清空输入的授权码、放弃邮箱草稿，并读取最新账号与保存基线。' : '只放弃本页邮箱草稿并清空授权码，不修改已保存配置。'}\n其它设置草稿不受影响。${emailAccountNeedsReadback ? '\n上次保存结果仍不确定，放弃草稿不能撤销可能已写入的内容；读回也不能凭地址相同确认新授权码保存成功。' : ''}`,
+        reload ? '放弃草稿并重新载入' : '放弃邮箱草稿', '继续编辑')) return;
+      discardEmailAccountDraft();
+      emailAccountEditing = false;
+      feedback('email-account-feedback', emailAccountNeedsReadback ? '邮箱草稿已放弃，上次保存仍待读回；请重新载入后再保存。' : '已取消邮箱编辑，没有写入配置。', emailAccountNeedsReadback);
+    } finally {
+      emailAccountBusy = false;
+      pending.delete('email-account-edit');
+      updateControls();
+    }
+    if (reload) await loadEmailAccount(true);
+  }
+
+  function validateEmailAccountDraft() {
+    const user = $('email-account-user').value.trim().toLowerCase();
+    if (!validQQAddress(user)) {
+      feedback('email-account-feedback', '请填写完整的 qq.com 或 foxmail.com 邮箱地址。', true);
+      return false;
+    }
+    if ($('email-account-password').value.trim()) {
+      if (!/^[A-Za-z]{16}$/.test($('email-account-password').value.trim())) {
+        feedback('email-account-feedback', '授权码必须是 16 位英文字母，不是 QQ 登录密码；允许前后空白。', true);
+        return false;
+      }
+    } else if (!emailAccountSnapshot?.passwordSet || user !== emailAccountSnapshot.user.trim().toLowerCase()) {
+      feedback('email-account-feedback', '新账号或更换邮箱必须填写授权码；只有同一邮箱已有授权码时才可留空保留。', true);
+      return false;
+    }
+    return true;
+  }
+
+  async function saveEmailAccount(event) {
+    event.preventDefault();
+    if (!emailAccountCanSave() || !validateEmailAccountDraft()) return;
+    const revision = emailAccountSnapshot.revision;
+    const receiveEnabled = $('email-account-receive').checked;
+    const sendEnabled = $('email-account-send').checked;
+    emailAccountBusy = true;
+    pending.add('email-account-save');
+    updateControls();
+    let submitted = false;
+    try {
+      if (!await confirmAction('单独保存邮箱配置？',
+        `收信：${receiveEnabled ? '开启' : '关闭'}；发信：${sendEnabled ? '开启' : '关闭'}。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。\n授权码将保存在本机 Harness 设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。\n宿主邮件工具之后可使用该账号，宿主页面可能检查账号。\n本次不主动读信、不发送测试邮件、不开放 Claudia 普通聊天工具，也不改变 Loader 开关或提交其它 Settings 草稿。\n邮箱配置保存即生效（live），无需重启。`,
+        '确认保存到本机设置文件', '继续编辑')) return;
+      if (!canMutate() || emailAccountSnapshot.revision !== revision) {
+        feedback('email-account-feedback', '连接或配置版本已变化，未提交邮箱配置；草稿保留，请重新载入核对。', true);
+        return;
+      }
+      if (!validateEmailAccountDraft()) return;
+      const user = $('email-account-user').value.trim().toLowerCase();
+      submitted = true;
+      const snapshot = validateEmailAccount(await api('/api/email/account', { method: 'POST',
+        body: { user, password: $('email-account-password').value.trim(), revision, confirmHostStorage: true, receiveEnabled, sendEnabled } }));
+      if (!snapshot.supported || !snapshot.compatible) throw new Error('账号权限表单当前不受支持。');
+      if (snapshot.user.toLowerCase() !== user || !snapshot.passwordSet || !snapshot.configured
+        || snapshot.receiveEnabled !== receiveEnabled || snapshot.sendEnabled !== sendEnabled) throw new Error('邮箱保存回执不完整。');
+      applyEmailAccount(snapshot);
+      emailAccountEditing = false;
+      emailAccountNeedsReadback = false;
+      feedback('email-account-feedback', '邮箱配置已单独保存并即时生效，无需重启；输入框中的授权码已清空。未读信、未发测试邮件，未开放 Claudia 聊天工具，其它设置草稿未提交。');
+    } catch (error) {
+      if (submitted) {
+        $('email-account-password').value = '';
+        emailAccountNeedsReadback = true;
+        const message = error?.status === 400 ? '邮箱配置校验未通过。' : error?.status === 409 ? '邮箱配置版本冲突。'
+          : error?.status === 503 ? '宿主未能确认邮箱配置保存结果。' : '邮箱配置保存未获有效确认，可能已写入。';
+        emailAccountError = `${message} 已清空授权码并锁定保存，请确认后重新载入；不会自动重试，也不能凭地址相同判断新授权码保存成功。`;
+        feedback('email-account-feedback', emailAccountError, true);
+      } else feedback('email-account-feedback', '本次未提交邮箱配置，草稿仍保留。', true);
+    } finally {
+      emailAccountBusy = false;
+      pending.delete('email-account-save');
+      updateControls();
+      if (!emailAccountEditing && !$('email-account-edit').disabled) $('email-account-edit').focus({ preventScroll: true });
+    }
+  }
+
+  function emailReviewCanStart() {
+    const days = Number($('email-review-days').value), prompt = $('email-review-prompt').value.trim();
+    return canMutate() && emailReviewRanges.has(days) && Boolean(prompt) && prompt.length <= 500
+      && emailAccountSnapshot?.supported === true && emailAccountSnapshot.compatible === true
+      && emailAccountSnapshot.configured === true && emailAccountSnapshot.receiveEnabled === true
+      && !emailAccountError && !emailAccountNeedsReadback && !emailAccountReading && !emailAccountBusy && !emailBusy && !emailReading
+      && !activeRun && !state.busy && !settingsSaving && !settingsClosing && !resetting && !profileBusy() && !restartConfirming;
+  }
+
+  function validateEmailReviewPreview(preview, days) {
+    if (!preview || typeof preview.supported !== 'boolean') throw new Error('邮件分析预览格式不完整，未连接邮箱。');
+    if (!preview.supported) throw new Error(asText(preview.message) || '当前宿主不支持独立邮件分析，请检查兼容版与收信配置。');
+    const reading = preview.reading;
+    if (!asText(preview.revision) || !preview.selection || Array.isArray(preview.selection)
+      || !asText(preview.selection.provider).trim() || !asText(preview.selection.model).trim()
+      || preview.window?.days !== days || !asText(preview.window?.since) || !asText(preview.window?.until) || !asText(preview.window?.label)
+      || !reading || JSON.stringify(reading.fields) !== '["subject","from"]' || reading.pageSize !== 100
+      || reading.maxMessages !== null || reading.readsBodies !== false || reading.readsAttachments !== false) {
+      throw new Error('邮件分析范围、模型或只读字段与当前界面契约不一致；未连接邮箱，请检查服务版本。');
+    }
+    return preview;
+  }
+
+  async function reviewEmail() {
+    if (emailReviewPreparing || !emailReviewCanStart() || !$('settings-dialog').open || confirmResolver) return;
+    const days = Number($('email-review-days').value);
+    const prompt = $('email-review-prompt').value.trim();
+    if (!emailReviewRanges.has(days)) { feedback('email-review-feedback', '请选择支持的邮件查看范围。', true); return; }
+    if (!prompt || prompt.length > 500) { feedback('email-review-feedback', '请输入 1—500 字的分析要求。', true); return; }
+    const sequence = ++emailReviewSequence;
+    emailReviewPreparing = true;
+    pending.add('email-review-preview');
+    updateControls();
+    feedback('email-review-feedback', '正在预览范围与当前模型；此步骤不连接邮箱。');
+    try {
+      const preview = validateEmailReviewPreview(await api(`/api/email/review/preview?days=${encodeURIComponent(days)}`), days);
+      if (sequence !== emailReviewSequence || !$('settings-dialog').open) return;
+      if (!emailReviewCanStart()) throw new Error('当前配置或运行状态已变化，请核对后重新预览；未启动分析。');
+      const approved = await confirmAction('确认共享邮件标题与发件人并独立分析？',
+        `只读 INBOX：${preview.window.label}。\n会分页读取该范围内全部邮件标题与发件人显示名/地址，不设置封数上限；不会读取正文、原始 MIME 或附件内容，也不会改变已读状态。\n分析要求：${prompt}\n标题与发件人字段将发送至当前所选模型：\nProvider：${preview.selection.provider}\nModel：${preview.selection.model}\n模型可能在云端；邮件较多时可能更慢、产生更多费用或受模型上下文限制。这些字段会在 Harness 独立分析会话中持久记录，结果留在 Claudia 记录，不上传 Workbench。\n发件人字段可辅助判断疑似广告、欺诈风险或疑似官方邮件，但单凭 From 字段不能验证真实身份。\n不自动发信、不访问邮件链接。普通聊天继续零工具，邮件字段不自动带入普通后续会话。\n确认后先处理未保存的设置与邮箱草稿，再关闭设置，在左侧对话展示进度与结果，可点击“停止”。`,
+        '确认共享并分析', '取消，不连接邮箱');
+      if (!approved) { feedback('email-review-feedback', '已取消；未连接邮箱，未向模型发送邮件标题或发件人。'); return; }
+      if (sequence !== emailReviewSequence || !emailReviewCanStart() || !$('settings-dialog').open) return;
+      const requestId = crypto.randomUUID();
+      // 必须沿用关闭保护；取消、保存失败或仍有待处理草稿时均不发起分析。
+      await closeSettings();
+      if ($('settings-dialog').open) {
+        feedback('email-review-feedback', '未启动分析；请先处理或保留草稿，之后重新点击并确认。');
+        return;
+      }
+      if (!emailReviewCanStart()) { feedback('chat-feedback', '运行状态已变化，未启动邮件分析。请重新打开设置预览并确认。', true); return; }
+      await startChatRun('/api/email/review', { revision: preview.revision, selection: preview.selection,
+        confirmDataSharing: true, requestId, days, prompt }, prompt, [], 'email-review');
+    } catch (error) {
+      if (sequence === emailReviewSequence && $('settings-dialog').open) feedback('email-review-feedback', errorText(error), true);
+    } finally {
+      emailReviewPreparing = false;
+      pending.delete('email-review-preview');
+      updateControls();
+    }
+  }
+
   function updateControls() {
     const usable = canMutate();
     const busy = Boolean(activeRun);
@@ -1002,13 +2027,15 @@
     $('settings-save').textContent = settingsSaving ? '保存中…' : '保存设置';
     $('reset-session').disabled = !usable || busy || settingsSaving || resetting;
     $('reset-session').textContent = resetting ? '重置中…' : '重置对话';
-    for (const id of ['journal-input', 'journal-time']) $(id).disabled = journalSaving;
+    $('journal-input').disabled = journalSaving;
     for (const id of ['memory-input', 'memory-confirm']) $(id).disabled = memorySaving;
     for (const id of ['assistant-name-input', 'allow-context']) $(id).disabled = !usable || settingsSaving || busy || resetting;
     const profileSaving = profileBusy();
     const configurationBusy = settingsSaving || busy || resetting || profileSaving || pending.has('background');
-    $('send-button').disabled ||= profileSaving;
-    $('settings-save').disabled ||= profileSaving || pending.has('background');
+    $('send-button').disabled ||= profileSaving || emailReviewPreparing;
+    $('reset-session').disabled ||= emailReviewPreparing;
+    $('settings-save').disabled ||= profileSaving || pending.has('background') || emailAccountBusy;
+    $('settings-close').disabled = emailAccountBusy || emailBusy || settingsSaving || pending.has('reflection-run');
     $('reset-session').disabled ||= profileSaving;
     for (const id of ['assistant-name-input', ...Object.values(settingFields)]) {
       $(id).disabled = !usable || configurationBusy || Boolean(settingsReceipt?.uncertain) || (id !== 'assistant-name-input' && id !== 'allow-context' && !state.features.automation);
@@ -1016,13 +2043,13 @@
     $('todo-add').disabled = !usable || !state.features.todos || pending.has('todo-add') || !$('todo-input').value.trim() || todoComposing;
     $('todo-add').textContent = pending.has('todo-add') ? '添加中…' : '添加';
     $('todo-input').disabled = pending.has('todo-add');
-    $('reflection-run').disabled = !usable || !state.features.reflections || state.runtime.configured !== true || busy || settingsSaving || pending.has('reflection-run') || state.maintenance.reflection?.running === true;
-    $('reflection-run').textContent = pending.has('reflection-run') || state.maintenance.reflection?.running === true ? '正在生成…' : '生成一次回顾';
+    for (const id of ['reflection-run', 'settings-reflection-run']) {
+      $(id).disabled = !canRunReflection();
+      $(id).textContent = pending.has('reflection-run') ? '等待确认 / 提交中…' : state.maintenance.reflection?.running === true ? '后台执行中…' : reflectionReceipt?.waiting ? '已受理 / 待核对' : '手动运行一次';
+      $(id).title = !state.settings.reflectionEnabled || settingsDraft?.reflectionEnabled !== true ? '需要保存并启用每日回顾；开关关闭时不可运行' : '补跑最近本地 05:00 一期；已有结果不重复生成';
+    }
     const reflectionSaving = [...reflectionDrafts.values()].some((draft) => draft.saving);
-    $('reflection-date').disabled = reflectionSaving;
-    $('reflection-date-clear').disabled = reflectionSaving;
-    $('reflection-select').disabled = reflectionSaving || !selectedReflectionId;
-    for (const [id, key] of [['open-harness', 'open-harness'], ['open-folder', 'open-folder']]) $(id).disabled = !usable || pending.has(key);
+    $('open-folder').disabled = !usable || pending.has('open-folder');
     $('open-folder').disabled ||= !state.dataDirectory;
     $('logs-refresh').disabled = !usable || !state.features.logs || pending.has('logs');
     $('logs-refresh').textContent = pending.has('logs') ? '读取中…' : '刷新';
@@ -1031,12 +2058,15 @@
     $('profiles-refresh').disabled = booting || busy || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving);
     $('reflections-refresh').disabled = booting || busy || reflectionSaving || pending.has('reflection-run');
     $('retry-load').disabled = booting || busy || restartInFlight;
-    $('settings-open-harness').disabled = !usable || pending.has('open-harness');
+    for (const id of ['settings-open-harness', 'plugins-open-harness']) $(id).disabled = !usable || pending.has('open-harness');
     renderSettingsEffect();
     renderRestart();
     renderProfiles();
     renderReflections();
-    $('reflection-select').disabled ||= reflectionSaving;
+    $('settings-reflection-refresh').disabled = booting || restartInFlight || settingsPolling || statusRefreshing || pending.has('reflection-run');
+    renderEmail();
+    renderEmailAccount();
+    updateRoutineControls();
   }
 
   function switchTab(name, focus = false) {
@@ -1052,8 +2082,9 @@
     }
     $('space-scroll').scrollTop = 0;
     if (name === 'today') renderToday();
-    if (name === 'journal' && !journalTimeDirty && !$('journal-input').value) $('journal-time').value = localDateTime();
     if (focus) $(`tab-${name}`).focus();
+    $(`tab-${name}`).scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (name === 'routine') { renderRoutines(); void readRoutineState(); }
   }
 
   function resizeComposer() {
@@ -1185,7 +2216,10 @@
     $('settings-recheck').disabled = settingsSaving || settingsPolling || statusRefreshing || restartInFlight || booting;
     $('settings-reload').hidden = !conflict;
     $('settings-reload').disabled = !canMutate() || settingsSaving || Boolean(receipt?.uncertain);
-    $('settings-draft-status').textContent = !hasState ? '正在读取设置' : hasSettingsDrafts() || receipt?.uncertain ? '有未保存的更改' : '所有更改已保存';
+    $('settings-draft-status').textContent = !hasState ? '正在读取设置' : emailAccountBusy ? '邮箱独立操作进行中'
+      : emailAccountNeedsReadback ? '邮箱保存结果待核对；请到插件页重新载入'
+        : hasEmailAccountDraft() ? '邮箱草稿需单独保存；下方只保存其它设置'
+          : hasSettingsDrafts() || receipt?.uncertain ? '有未保存的设置更改' : '无待保存的设置草稿';
   }
 
   function switchSettingsTab(name, focus = false) {
@@ -1202,6 +2236,7 @@
     $('settings-content').scrollTop = 0;
     // 首次切到数据与维护才读日志：隐藏的页面不做轮询，也不在打开设置时白拉一次。
     if (name === 'maintenance' && !state.logsLoaded) void loadLogs();
+    if (name === 'plugins') { void loadPlugins(); void loadEmail(); void loadEmailAccount(); }
     if (focus) {
       const tab = $(`settings-tab-${name}`);
       tab.focus({ preventScroll: true });
@@ -1228,13 +2263,14 @@
     finally { settingsPolling = false; updateControls(); }
   }
 
-  function openSettings() {
-    if ($('settings-dialog').open) return;
+  function openSettings(name = settingsTab) {
+    if (!settingsTabs.includes(name)) return;
+    if ($('settings-dialog').open) { switchSettingsTab(name, true); return; }
     settingsReturnFocus = document.activeElement;
     renderRuntime();
     updateControls();
     $('settings-dialog').showModal();
-    switchSettingsTab(settingsTab, true);
+    switchSettingsTab(name, true);
     scheduleSettingsPoll();
   }
 
@@ -1245,16 +2281,32 @@
     resolve?.(choice);
   }
 
+  function finishSettingsClose() {
+    discardEmailAccountDraft();
+    emailAccountEditing = false;
+    ++emailAccountReadSequence;
+    emailAccountReading = false;
+    $('settings-dialog').close();
+  }
+
   async function closeSettings() {
     if (settingsClosing || !$('settings-dialog').open) return;
+    if (inlineConfirm) { settleConfirm(false); return; }
+    if (emailBusy || emailAccountBusy || pending.has('reflection-run')) { feedback('settings-feedback', '独立操作正在提交，请等待读取结果；设置和邮箱草稿仍保留。'); return; }
     if (settingsSaving) { feedback('settings-feedback', '正在保存或等待确认，请先完成当前操作。'); return; }
-    if (!hasSettingsDrafts() && !settingsReceipt?.uncertain) { $('settings-dialog').close(); return; }
     settingsClosing = true;
     const returnFocus = document.activeElement;
     try {
+      if (hasEmailAccountDraft() || emailAccountNeedsReadback) {
+        if (!await confirmAction('关闭前单独处理邮箱草稿',
+          `邮箱配置不随“保存设置”提交。放弃将清空输入的授权码，只丢弃邮箱草稿；其它设置之后单独处理。${emailAccountNeedsReadback ? '\n上次保存结果仍待核对，放弃草稿不会撤销可能已写入的配置；下次仍需重新载入，不能凭地址相同确认新授权码保存成功。' : ''}\n若要保存邮箱，请继续编辑并使用“保存邮箱配置”。`,
+          '放弃邮箱草稿', '继续编辑')) return;
+        discardEmailAccountDraft();
+      }
+      if (!hasSettingsDrafts() && !settingsReceipt?.uncertain) { finishSettingsClose(); return; }
       $('settings-close-description').textContent = settingsReceipt?.uncertain
-        ? '上次保存结果仍待核对。“放弃草稿”只放弃本页编辑，不能撤销可能已写入的内容；重新打开设置后仍可核对。取消会继续保留草稿。'
-        : '有未保存的更改。保存设置将提交所有标签中的名字、开关和正文；放弃草稿不会写入，取消则返回继续编辑。';
+        ? '上次普通设置保存结果仍待核对。“放弃草稿”只放弃本页编辑，不能撤销可能已写入的内容；重新打开设置后仍可核对。取消会继续保留草稿。'
+        : '有未保存的更改。保存设置只提交名字、普通开关和正文，不含邮箱；放弃草稿不会写入，取消则返回继续编辑。';
       $('settings-close-save').disabled = $('settings-save').disabled;
       const choice = await new Promise((resolve) => {
         settingsCloseResolver = resolve;
@@ -1262,7 +2314,7 @@
         $('settings-close-cancel').focus();
       });
       if (choice === 'save') {
-        if (await saveSettings()) $('settings-dialog').close();
+        if (await saveSettings()) finishSettingsClose();
       } else if (choice === 'discard') {
         settingsDraft = null;
         settingsBaseline = null;
@@ -1272,10 +2324,11 @@
         feedback('settings-feedback');
         if (!settingsReceipt?.uncertain) settingsReceipt = null;
         updateControls();
-        $('settings-dialog').close();
+        finishSettingsClose();
       }
     } finally {
       settingsClosing = false;
+      updateControls();
       if ($('settings-dialog').open && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus({ preventScroll: true });
     }
   }
@@ -1284,11 +2337,12 @@
     return Object.keys(settingsChanges()).length > 0
       || [...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.dirty || draft.awaiting)
       || ['chat-input', 'journal-input', 'todo-input', 'memory-input'].some((id) => $(id).value.trim())
-      || attachments.size > 0;
+      || attachments.size > 0 || routineDraftDirty || routineDraftBlocked
+      || hasEmailAccountDraft() || emailAccountBusy || emailAccountNeedsReadback;
   }
 
   function restartBusy() {
-    return Boolean(activeRun) || settingsSaving || resetting || journalSaving || memorySaving || profileBusy()
+    return Boolean(activeRun) || settingsSaving || resetting || journalSaving || memorySaving || profileBusy() || routineBusy || routineUncertain || emailBusy || emailAccountBusy || emailAccountReading || reflectionReceipt?.waiting
       || pending.size > 0 || deleting.size > 0 || [...reflectionDrafts.values()].some((draft) => draft.saving)
       || state.busy || state.restart.state === 'restarting' || state.settingsEffect.state === 'applying'
       || ['starting', 'stopping'].includes(state.activity.state)
@@ -1300,8 +2354,9 @@
     if (restartInFlight || restartConfirming) return '正在处理重启，请勿重复操作。';
     if (!canMutate()) return '请先恢复本机连接并完成安全校验。';
     if (settingsReceipt?.uncertain) return '请先核对上次保存结果，再重启。';
+    if (emailAccountNeedsReadback) return '邮箱保存结果待核对，请先到插件页确认并重新载入，再重启。';
     if (restartBusy()) return '宿主或页面任务忙碌，请等待任务结束后重启。';
-    if (hasUnsavedDrafts()) return '有未保存草稿，请先保存或处理设置、人格、回顾及输入框中的草稿。';
+    if (hasUnsavedDrafts()) return '有未保存草稿，请先保存或处理邮箱、设置、人格、回顾及输入框中的草稿。';
     return '';
   }
 
@@ -1314,7 +2369,7 @@
     $('restart-state').dataset.state = restartInFlight ? 'restarting' : pendingRestart ? 'pending' : restart.state;
     $('restart-running-version').textContent = restart.runningVersion || '宿主未提供';
     $('restart-installed-version').textContent = restart.installedVersion || '宿主未提供';
-    $('restart-description').textContent = [pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启承载 Claudia 的 Harness 服务。', restart.message || restart.reason].filter(Boolean).join('\n');
+    $('restart-description').textContent = [emailSnapshot?.needsRestart ? '邮件开关已单独保存，重启后生效。' : '', pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启承载 Claudia 的 Harness 服务。', restart.message || restart.reason].filter(Boolean).join('\n');
     const blocked = restartBlocked();
     const buttonLabel = restartInFlight || restart.state === 'restarting' ? '正在重启…' : pendingRestart ? '重启以应用更新' : '重启服务';
     $('restart-hint').textContent = blocked;
@@ -1404,28 +2459,43 @@
       }
     } finally {
       restartInFlight = false;
+      if (sent && emailSnapshot) emailError = '重启后邮件状态需要重新读取，请进入插件页或刷新邮件状态。';
       updateControls();
+      if (sent) void loadEmail();
       scheduleSettingsPoll();
     }
   }
 
   function confirmAction(title, description, accept, cancel = '保留') {
     if (confirmResolver) return Promise.resolve(false);
-    $('confirm-title').textContent = title;
-    $('confirm-description').textContent = description;
-    $('confirm-accept').textContent = accept;
-    $('confirm-cancel').textContent = cancel;
+    inlineConfirm = $('settings-dialog').open;
+    confirmReturnFocus = document.activeElement;
+    const prefix = inlineConfirm ? 'settings-action' : 'confirm';
+    $(`${prefix}-title`).textContent = title;
+    $(`${prefix}-description`).textContent = description;
+    $(`${prefix}-accept`).textContent = accept;
+    $(`${prefix}-cancel`).textContent = cancel;
     return new Promise((resolve) => {
       confirmResolver = resolve;
-      $('confirm-dialog').showModal();
-      $('confirm-cancel').focus();
+      if (inlineConfirm) {
+        // 设置内使用同一 dialog 的确认区域，避免嵌套 modal 抢走 Escape。
+        for (const node of $('settings-dialog').children) if (node !== $('settings-action-confirm')) node.inert = true;
+        $('settings-action-confirm').hidden = false;
+      } else $('confirm-dialog').showModal();
+      $(`${prefix}-cancel`).focus();
     });
   }
 
   function settleConfirm(accepted) {
     const resolve = confirmResolver;
     confirmResolver = null;
-    $('confirm-dialog').close();
+    if (inlineConfirm) {
+      $('settings-action-confirm').hidden = true;
+      for (const node of $('settings-dialog').children) node.inert = false;
+      inlineConfirm = false;
+    } else $('confirm-dialog').close();
+    if (confirmReturnFocus?.isConnected && !confirmReturnFocus.disabled) confirmReturnFocus.focus({ preventScroll: true });
+    confirmReturnFocus = null;
     if (resolve) resolve(accepted);
   }
 
@@ -1434,20 +2504,14 @@
     if (journalSaving || !canMutate()) return;
     const text = $('journal-input').value.trim();
     if (!text) { feedback('journal-feedback', '写下一点内容，再保存吧。', true); return; }
-    if (!journalTimeDirty) $('journal-time').value = localDateTime();
-    const selectedTime = $('journal-time').value;
-    const occurred = selectedTime ? dateValue(selectedTime) : null;
-    if (selectedTime && !occurred) { feedback('journal-feedback', '发生时间格式不正确，请重新选择。', true); return; }
     journalSaving = true;
     updateControls();
     feedback('journal-feedback');
     let saved = false;
     try {
-      await api('/api/journal', { method: 'POST', body: { text, ...(occurred ? { occurredAt: occurred.toISOString() } : {}) } });
+      await api('/api/journal', { method: 'POST', body: { text } });
       saved = true;
       $('journal-input').value = '';
-      journalTimeDirty = false;
-      $('journal-time').value = localDateTime();
       await refreshState();
       feedback('journal-feedback', '已保存到本地 Journal，没有发送给模型。');
     } catch (error) {
@@ -1521,7 +2585,7 @@
 
   async function saveSettings(event) {
     event?.preventDefault();
-    if (settingsSaving || activeRun || resetting || profileBusy() || pending.has('background') || !canMutate() || settingsReceipt?.uncertain) return false;
+    if (settingsSaving || emailAccountBusy || activeRun || resetting || profileBusy() || pending.has('background') || !canMutate() || settingsReceipt?.uncertain) return false;
     const settings = settingsChanges();
     const profiles = Object.fromEntries([...profileDrafts].filter(([, draft]) => draft.dirty).map(([name, draft]) => [name, { body: draft.text, revision: draft.revision }]));
     if (!Object.keys(settings).length && !Object.keys(profiles).length) return true;
@@ -1666,12 +2730,65 @@
     if (!entry || !['', 'pending', 'candidate', 'proposed'].includes(entry.status)) return;
     void mutate(`candidate:${id}`, `/api/memory-candidates/${encodeURIComponent(id)}`, { accept }, 'memory-candidate-feedback', accept ? '已由你确认接受为长期记忆。' : '已忽略这条候选，未接受为记忆。');
   }
-  function runReflection() {
-    if (!state.features.reflections || state.runtime.configured !== true || activeRun || state.maintenance.reflection?.running === true) return;
-    void mutate('reflection-run', '/api/reflections/run', {}, 'reflection-run-feedback', '生成请求已完成；回顾与任务状态已刷新。如果宿主仍在执行，请稍后刷新查看。', {
-      timeout: 180000,
-      confirm: ['生成过去 24 小时的回顾？', '将把过去 24 小时的 Journal、Todo，以及已开启采集时可用的应用时长发送给 Harness 配置的模型服务。模型会产生费用。\n\n这次手动生成不会开启每日自动回顾。', '确认生成并付费', '暂不生成']
-    });
+  function canRunReflection(ignorePending = false) {
+    return canMutate() && state.features.reflections && state.runtime.configured === true && state.settings.reflectionEnabled === true
+      && settingsDraft?.reflectionEnabled === true && !activeRun && !settingsSaving && !resetting && !restartConfirming
+      && (ignorePending || !pending.has('reflection-run')) && !reflectionReceipt?.waiting && state.maintenance.reflection?.running !== true;
+  }
+
+  function reflectionFeedback(message, isError = false) {
+    feedback('reflection-run-feedback', message, isError);
+    feedback('settings-reflection-run-feedback', message, isError);
+  }
+
+  function observeReflectionRun() {
+    const receipt = reflectionReceipt;
+    if (!receipt?.waiting) return;
+    const task = state.maintenance.reflection || {};
+    if (task.running === true || task.state === 'running') { receipt.sawRunning = true; return; }
+    const result = state.reflections.find((entry) => dateValue(entry.end)?.getTime() === receipt.end || !receipt.ids.has(entry.id));
+    const changed = JSON.stringify(task) !== receipt.task;
+    const terminal = ['success', 'completed', 'ok', 'skipped', 'error', 'failed', 'cancelled', 'no-data'].includes(task.state);
+    if (result) {
+      receipt.waiting = false;
+      reflectionFeedback(receipt.ids.has(result.id) ? '已核对到本期已保存回顾，可在 Journal 查看；已有结果不会重复生成。' : '已从状态中读取到保存的回顾，可在 Journal 查看；受理响应本身不算生成成功。');
+    } else if ((changed || receipt.sawRunning) && (terminal || task.error || task.lastError)) {
+      receipt.waiting = false;
+      reflectionFeedback(`后台状态已更新：${taskStatus(task) || '未提供详细结果'}。尚未读取到本期回顾，请查看执行状态。`, Boolean(task.error || task.lastError || ['error', 'failed'].includes(task.state)));
+    } else if (Date.now() - receipt.at > 60000) {
+      reflectionFeedback('尚未核对到本次最终结果。保留状态轮询，不重复提交；请使用「查看执行状态」或刷新回顾核对。', true);
+    }
+  }
+
+  async function runReflection() {
+    if (!canRunReflection()) return;
+    pending.add('reflection-run');
+    updateControls();
+    let sent = false;
+    try {
+      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo 和可选应用时长发送给 Harness 所选模型，可能产生费用。约 300 字，最多 500 字、无最低字数，提炼洞察而非抄流水账。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
+        reflectionFeedback('已取消，未提交运行请求；自动开关与其它草稿保持不变。');
+        return;
+      }
+      if (!canRunReflection(true)) throw new Error('当前状态已变化，请先保存并启用每日回顾后核对运行状态。');
+      const requestId = crypto.randomUUID();
+      const end = new Date();
+      end.setHours(5, 0, 0, 0);
+      if (end.getTime() > Date.now()) end.setDate(end.getDate() - 1);
+      reflectionReceipt = { requestId, waiting: true, at: Date.now(), end: end.getTime(), ids: new Set(state.reflections.map((entry) => entry.id)), task: JSON.stringify(state.maintenance.reflection || {}), sawRunning: false };
+      sent = true;
+      const result = await api('/api/reflections/run', { method: 'POST', body: { confirmDataSharing: true, requestId }, withStatus: true });
+      if (result.status !== 202) throw new Error('未收到预期的后台受理响应，最终结果需要从状态核对。');
+      reflectionFeedback('后台已受理（不是生成成功）；正在轮询执行状态。已有结果不重复生成，可查看执行状态或 Journal 回顾。');
+      if ($('settings-dialog').open) $('settings-reflection-details').open = true;
+    } catch (error) {
+      if (sent && error.status && error.status < 500) reflectionReceipt = null;
+      reflectionFeedback(`${errorText(error)}${sent ? ' 不会自动重发，请查看执行状态。' : ' 未提交运行请求。'}`, true);
+    } finally {
+      pending.delete('reflection-run');
+      updateControls();
+      if (sent) await refreshStatus(false);
+    }
   }
   function toggleBackground() {
     if (!state.background.supported) return;
@@ -1683,14 +2800,20 @@
         : ['停用登录后台服务？', '将请求停用 macOS 系统后台服务和登录自启，可能中断当前 Harness 连接。停用结果以返回状态为准，已有记录保留。\n\n定时任务仍需 Harness 运行；关闭浏览器与停用服务不是同一操作。', '确认停用', '保持启用']
     });
   }
-  function openHost() {
-    void mutate('open-harness', '/api/open-harness', {}, $('settings-dialog').open ? 'settings-host-feedback' : 'host-open-feedback', '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
+  function openHost(event) {
+    const feedbackId = event.currentTarget.id === 'email-open-harness' ? 'email-host-feedback'
+      : event.currentTarget.id === 'plugins-open-harness' ? 'plugins-host-feedback' : 'settings-host-feedback';
+    if (emailAccountBusy) return;
+    void mutate('open-harness', '/api/open-harness', {}, feedbackId, event.currentTarget.id === 'email-open-harness'
+      ? '已请求打开可选宿主入口。即使宿主页面无法打开，也可直接在 Claudia 的邮箱表单中配置。'
+      : '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
   }
 
   async function saveRevision(kind, id) {
     if (kind === 'profile') return saveSettings();
     const draft = reflectionDrafts.get(id);
-    const feedbackId = 'reflection-feedback';
+    const feedbackId = reflectionCards.get(id)?.message.id;
+    if (!feedbackId) return;
     if (!canMutate() || !draft || draft.saving || draft.awaiting || draft.conflict || !draft.dirty || !validRevision(draft.revision)) return;
     if (!draft.text.trim()) return;
     draft.saving = true;
@@ -1722,7 +2845,8 @@
     const isProfile = kind === 'profile';
     const drafts = isProfile ? profileDrafts : reflectionDrafts;
     const draft = drafts.get(id);
-    const feedbackId = isProfile ? `profile-${id}-feedback` : 'reflection-feedback';
+    const feedbackId = isProfile ? `profile-${id}-feedback` : reflectionCards.get(id)?.message.id;
+    if (!feedbackId) return;
     if (draft?.saving || isProfile && (settingsSaving || settingsReceipt?.uncertain)) return;
     if (draft?.dirty && !draft.awaiting && !await confirmAction('用最新版本替换草稿？', '只替换这个编辑框的未保存草稿，不改动服务器文件。请先复制仍需保留的内容。', '载入最新版本', '保留草稿')) return;
     try {
@@ -1770,7 +2894,7 @@
     if (name === 'reflections') renderReflections();
   }
   async function refreshStatus(manual = false, feedbackId = 'profiles-feedback') {
-    if (statusRefreshing || settingsPolling || restartInFlight || booting || activeRun || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving) || pending.size || [...reflectionDrafts.values()].some((draft) => draft.saving)) return;
+    if (statusRefreshing || settingsPolling || routinePolling || routineBusy || restartInFlight || booting || activeRun || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving) || pending.size || [...reflectionDrafts.values()].some((draft) => draft.saving)) return;
     if (!manual && (document.hidden || !hasState || offline || $('settings-dialog').open)) return;
     statusRefreshing = true;
     try {
@@ -1783,7 +2907,7 @@
 
   function ensureAssistant(run) {
     if (run.assistant) return run.assistant;
-    run.assistant = { id: run.messageId || `local-assistant-${++localSequence}`, role: 'assistant', content: '', createdAt: '', status: 'streaming' };
+    run.assistant = { id: run.messageId || `local-assistant-${++localSequence}`, role: 'assistant', content: '', createdAt: '', status: 'streaming', source: run.source };
     state.messages.push(run.assistant);
     renderChat();
     return run.assistant;
@@ -1796,34 +2920,55 @@
       updateControls();
     }
     switch (frame.type) {
-      case 'start':
-        run.messageId = asId(frame.id);
+      case 'start': {
+        const user = entriesFrom([frame.user], 'messages')[0];
+        const assistant = entriesFrom([frame.assistant], 'messages')[0];
+        if (run.source === 'email-review' && (!user || user.role !== 'user' || !assistant || assistant.role !== 'assistant')) {
+          throw new Error('邮件分析启动回执不完整，请核对记录；不会自动重试。');
+        }
+        if (user?.role === 'user') Object.assign(run.user, user, { source: run.source });
+        run.messageId = assistant?.role === 'assistant' ? assistant.id : asId(frame.id);
+        if (assistant?.role === 'assistant') Object.assign(ensureAssistant(run), assistant, { source: run.source });
         if (run.assistant && run.messageId) run.assistant.id = run.messageId;
+        if (run.source === 'email-review') {
+          emailReviewMessageIds.add(run.user.id);
+          emailReviewMessageIds.add(run.messageId);
+          feedback('chat-feedback', '独立邮件分析进行中：正在只读获取并整理限定范围的邮件，可点击“停止”。');
+        }
+        renderChat();
         return false;
+      }
       case 'status':
-        if (typeof frame.text === 'string' && !run.cancelRequested) feedback('chat-feedback', frame.text);
+        if (typeof frame.text === 'string' && !run.cancelRequested) feedback('chat-feedback', run.source === 'email-review' ? `独立邮件分析 · ${frame.text}` : frame.text);
         return false;
       case 'delta': {
         if (typeof frame.text !== 'string') throw new Error('对话片段格式异常，请检查服务状态。');
         if (!frame.text) return false;
-        const nearBottom = nearChatBottom();
-        const firstDelta = !run.assistant;
+        const firstDelta = !run.assistant?.content;
         const assistant = ensureAssistant(run);
         assistant.content += frame.text;
-        run.contentElement.textContent = assistant.content;
-        if (firstDelta) feedback('chat-feedback', (name) => `正在接收 ${name} 的模型回复…`);
-        scrollChat(false, nearBottom);
+        if (!run.renderFrame) run.renderFrame = requestAnimationFrame(() => {
+          run.renderFrame = null;
+          if (activeRun !== run || !run.contentElement?.isConnected) return;
+          const stickToBottom = nearChatBottom();
+          renderAssistantContent(run.contentElement, assistant.content);
+          scrollChat(false, stickToBottom);
+        });
+        if (firstDelta) feedback('chat-feedback', run.source === 'email-review' ? '正在接收独立邮件分析结果…' : (name) => `正在接收 ${name} 的模型回复…`);
         return false;
       }
       case 'done': {
         const message = frame.message;
         if (!message || typeof message.content !== 'string' || !asId(message.id)) throw new Error('最终回复数据不完整，请刷新查看保存结果。');
         const assistant = ensureAssistant(run);
-        Object.assign(assistant, { id: asId(message.id), role: 'assistant', content: message.content, createdAt: asText(message.createdAt), status: asText(message.status) });
+        Object.assign(assistant, { id: asId(message.id), role: 'assistant', content: message.content, createdAt: asText(message.createdAt), status: asText(message.status), source: run.source });
+        if (run.source === 'email-review') emailReviewMessageIds.add(assistant.id);
         run.user.status = 'sent';
         run.done = true;
         renderChat();
-        feedback('chat-feedback', (name) => assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请回 Harness 的模型设置检查。`);
+        feedback('chat-feedback', run.source === 'email-review'
+          ? `独立邮件标题与发件人分析${assistant.status === 'complete' ? '已完成' : `：${messageStatus(assistant.status) || '未完整结束'}`}。这些邮件字段不自动带入普通后续会话。`
+          : (name) => assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请回 Harness 的模型设置检查。`);
         return true;
       }
       case 'error':
@@ -1877,7 +3022,7 @@
 
   async function sendChat(event) {
     event.preventDefault();
-    if (activeRun || resetting || settingsSaving || profileBusy() || restartInFlight || state.restart.state === 'restarting') return;
+    if (activeRun || emailReviewPreparing || resetting || settingsSaving || profileBusy() || restartInFlight || state.restart.state === 'restarting') return;
     if (!hasState || offline || !csrfToken) { feedback('chat-feedback', '请先连接本机服务，读取状态后再发送。', true); return; }
     const text = $('chat-input').value.trim();
     if (!text) return;
@@ -1886,27 +3031,35 @@
       return;
     }
     const contextIds = [...attachments].filter((id) => state.journal.some((entry) => entry.id === id));
+    await startChatRun('/api/chat', { text, ...(contextIds.length ? { contextIds } : {}) }, text, contextIds);
+  }
+
+  async function startChatRun(path, body, text, contextIds = [], source = 'chat') {
+    const isEmailReview = source === 'email-review';
     const run = {
-      controller: new AbortController(), user: { id: `local-user-${++localSequence}`, role: 'user', content: text, createdAt: '', status: 'sending' },
+      source, controller: new AbortController(), user: { id: `local-user-${++localSequence}`, role: 'user', content: text, createdAt: '', status: 'sending', source },
       assistant: null, contentElement: null, messageId: '', runId: '', done: false, accepted: false,
       existingIds: new Set(state.messages.map((message) => message.id)),
       cancelRequested: false, cancelPromise: null, cancelError: '', phase: 'request'
     };
     activeRun = run;
     state.messages.push(run.user);
-    $('chat-input').value = '';
-    attachments.clear();
-    renderAttachments();
-    resizeComposer();
+    if (!isEmailReview) {
+      $('chat-input').value = '';
+      attachments.clear();
+      renderAttachments();
+      resizeComposer();
+    }
     updateControls();
     renderChat(true);
-    feedback('chat-feedback', (name) => `请求已发送，正在等待 ${name} 的模型回复。`);
+    if (isEmailReview) $('chat-scroll').focus({ preventScroll: true });
+    feedback('chat-feedback', isEmailReview ? '独立邮件分析已请求，正在等待只读邮件检查与分析进度；不会自动发信或访问链接。' : (name) => `请求已发送，正在等待 ${name} 的模型回复。`);
     let failure = '';
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch(path, {
         method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: run.controller.signal,
         headers: { 'Content-Type': 'application/json', 'X-Claudia-Token': csrfToken, Accept: 'application/x-ndjson' },
-        body: JSON.stringify({ text, ...(contextIds.length ? { contextIds } : {}) })
+        body: JSON.stringify(body)
       });
       if (!response.ok) {
         let payload = null;
@@ -1920,8 +3073,8 @@
     } catch (error) {
       if (!run.cancelRequested) {
         failure = errorText(error);
-        feedback('chat-feedback', (name) => `${name} 暂未完成回复：${failure}`, true);
-        if (!run.accepted && !$('chat-input').value) {
+        feedback('chat-feedback', isEmailReview ? `独立邮件分析未完成：${failure} 不会自动重试，请先核对记录。` : (name) => `${name} 暂未完成回复：${failure}`, true);
+        if (!isEmailReview && !run.accepted && !$('chat-input').value) {
           $('chat-input').value = text;
           for (const id of contextIds) {
             if (state.journal.some((entry) => entry.id === id)) attachments.add(id);
@@ -1948,7 +3101,7 @@
       if (activeRun === run) activeRun = null;
       if (run.cancelRequested && !run.cancelError) {
         feedback('chat-feedback', refreshed ? '本次回复已停止，本地记录已同步。' : '已停止接收回复。当前无法刷新，请重新加载确认最终记录。', !refreshed);
-      } else if (failure) feedback('chat-feedback', (name) => `${name} 暂未完成回复：${failure}`, true);
+      } else if (failure) feedback('chat-feedback', isEmailReview ? `独立邮件分析未完成：${failure} 不会自动重试，请先核对记录。` : (name) => `${name} 暂未完成回复：${failure}`, true);
       updateControls();
     }
   }
@@ -1999,15 +3152,56 @@
     else if (target.dataset.action === 'candidate-reject') decideCandidate(id, false);
   });
 
-  $('runtime-button').addEventListener('click', () => switchTab('capabilities'));
-  $('settings-open').addEventListener('click', openSettings);
-  $('capabilities-settings').addEventListener('click', openSettings);
+  $('runtime-button').addEventListener('click', () => openSettings('maintenance'));
+  $('settings-open').addEventListener('click', () => openSettings());
+  $('runtime-settings').addEventListener('click', () => switchSettingsTab('general', true));
+  $('plugins-refresh').addEventListener('click', () => { void loadPlugins(); void loadEmail(); void loadEmailAccount(); });
+  $('plugins-open-harness').addEventListener('click', openHost);
+  $('email-open-harness').addEventListener('click', openHost);
+  $('email-refresh').addEventListener('click', () => { void loadEmail(); void loadEmailAccount(); });
+  $('email-enabled').addEventListener('change', () => void toggleEmail());
+  $('email-account-edit').addEventListener('click', openEmailAccountEditor);
+  $('email-review').addEventListener('click', () => void reviewEmail());
+  $('email-review-days').addEventListener('change', () => {
+    const current = $('email-review-prompt').value.trim();
+    if ([...emailReviewRanges.keys()].some(days => current === defaultEmailReviewPrompt(days))) {
+      $('email-review-prompt').value = defaultEmailReviewPrompt(Number($('email-review-days').value));
+    }
+    feedback('email-review-feedback');
+    updateControls();
+  });
+  $('email-review-prompt').addEventListener('input', () => { feedback('email-review-feedback'); updateControls(); });
+  $('email-account-form').addEventListener('submit', saveEmailAccount);
+  $('email-account-cancel').addEventListener('click', () => void editEmailAccount());
+  $('email-account-reload').addEventListener('click', () => void editEmailAccount(true));
+  for (const id of ['email-account-user', 'email-account-password', 'email-account-receive', 'email-account-send']) $(id).addEventListener('input', () => {
+    feedback('email-account-feedback');
+    updateControls();
+  });
+  $('email-restart').addEventListener('click', () => {
+    if (restartBlocked()) { renderEmail(); return; }
+    switchSettingsTab('maintenance', true);
+    void restartHost();
+  });
   $('settings-close').addEventListener('click', closeSettings);
   $('settings-form').addEventListener('submit', saveSettings);
-  $('settings-dialog').addEventListener('cancel', (event) => { event.preventDefault(); closeSettings(); });
+  $('settings-dialog').addEventListener('cancel', (event) => { event.preventDefault(); if (inlineConfirm) settleConfirm(false); else void closeSettings(); });
+  $('settings-dialog').addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && inlineConfirm) { event.preventDefault(); event.stopPropagation(); settleConfirm(false); }
+  }, true);
+  $('settings-action-cancel').addEventListener('click', () => settleConfirm(false));
+  $('settings-action-accept').addEventListener('click', () => settleConfirm(true));
   $('settings-dialog').addEventListener('close', () => {
+    if ($('settings-dialog').open) return;
     window.clearTimeout(settingsPollTimer);
-    if (settingsReturnFocus?.isConnected && !$('confirm-dialog').open) settingsReturnFocus.focus({ preventScroll: true });
+    discardEmailAccountDraft();
+    emailAccountEditing = false;
+    ++emailReviewSequence;
+    ++emailAccountReadSequence;
+    emailAccountReading = false;
+    updateControls();
+    if (activeRun?.source === 'email-review') $('chat-scroll').focus({ preventScroll: true });
+    else if (settingsReturnFocus?.isConnected && !$('confirm-dialog').open) settingsReturnFocus.focus({ preventScroll: true });
   });
   document.querySelectorAll('[data-settings-tab]').forEach((tab) => {
     tab.addEventListener('click', () => switchSettingsTab(tab.dataset.settingsTab, true));
@@ -2049,8 +3243,6 @@
   });
   $('journal-form').addEventListener('submit', saveJournal);
   $('memory-form').addEventListener('submit', saveMemory);
-  $('journal-time').value = localDateTime();
-  $('journal-time').addEventListener('input', () => { journalTimeDirty = true; });
   for (const id of ['journal-input', 'memory-input', 'memory-confirm']) $(id).addEventListener('input', updateControls);
   $('chat-form').addEventListener('submit', sendChat);
   $('chat-input').addEventListener('input', () => { resizeComposer(); updateControls(); });
@@ -2066,6 +3258,25 @@
   $('retry-load').addEventListener('click', bootstrap);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { renderToday(); void refreshStatus(); } });
   window.addEventListener('resize', resizeComposer);
+
+  $('routine-form').addEventListener('submit', saveRoutine);
+  $('routine-fields').addEventListener('input', () => { routineDraftDirty = true; updateRoutineControls(); });
+  $('routine-type').addEventListener('change', syncRoutineSchedule);
+  $('routine-new').addEventListener('click', () => void editRoutine());
+  $('routine-cancel-edit').addEventListener('click', () => void editRoutine('', true));
+  $('routine-rebase').addEventListener('click', () => void rebaseRoutineDraft());
+  $('routine-recheck').addEventListener('click', async () => {
+    if (offline) { await bootstrap(); return; }
+    if (await readRoutineState(true)) {
+      routineUncertain = false;
+      feedback('routine-feedback', '已刷新任务与历史；不取消编辑，不覆盖名称或正文草稿，也不会重发上次请求。');
+      renderRoutines();
+    }
+  });
+  window.setInterval(() => {
+    if (document.hidden || !state.routines) return;
+    if (currentTab === 'routine' || routineAwaiting.size || state.routineRuns.some((run) => run.status === 'running') || state.routines.jobs.some((job) => job.lastRun?.status === 'running')) void readRoutineState();
+  }, 5000);
 
   $('todo-form').addEventListener('submit', saveTodo);
   $('todo-input').addEventListener('input', updateControls);
@@ -2095,46 +3306,29 @@
     });
   });
   $('today-reflection-open').addEventListener('click', () => {
-    $('reflection-date').value = '';
-    selectedReflectionId = sortedReflections()[0]?.id || '';
-    feedback('reflection-feedback');
     switchTab('journal');
     switchJournalView('reflections');
   });
-  $('reflection-date').addEventListener('change', () => { feedback('reflection-feedback'); renderReflections(); });
-  $('reflection-date-clear').addEventListener('click', () => { $('reflection-date').value = ''; renderReflections(); });
-  $('reflection-select').addEventListener('change', () => {
-    selectedReflectionId = $('reflection-select').value;
-    feedback('reflection-feedback');
-    renderReflections();
+  $('reflections-more').addEventListener('click', () => { reflectionVisibleCount += 7; renderReflections(); });
+  $('reflection-settings-open').addEventListener('click', () => openSettings('automation'));
+  $('reflection-run').addEventListener('click', () => void runReflection());
+  $('settings-reflection-run').addEventListener('click', () => void runReflection());
+  $('settings-reflection-status-open').addEventListener('click', () => {
+    $('settings-reflection-details').open = true;
+    $('settings-reflection-details').scrollIntoView({ block: 'nearest' });
   });
-  $('reflection-edit').addEventListener('click', () => {
-    const draft = reflectionDrafts.get(selectedReflectionId);
-    if (!draft) return;
-    draft.editing = true;
-    renderReflections();
-    $('reflection-input').focus();
-  });
-  $('reflection-input').addEventListener('input', () => {
-    const draft = reflectionDrafts.get(selectedReflectionId);
-    if (!draft) return;
-    draft.text = $('reflection-input').value;
-    draft.dirty = draft.text !== draft.baseline;
-    feedback('reflection-feedback');
-    renderReflections();
-  });
-  $('reflection-form').addEventListener('submit', (event) => { event.preventDefault(); void saveRevision('reflection', selectedReflectionId); });
-  $('reflection-reload').addEventListener('click', () => void reloadRevision('reflection', selectedReflectionId));
-  $('reflection-run').addEventListener('click', runReflection);
+  $('settings-reflection-refresh').addEventListener('click', async () => { await pollSettings(); scheduleSettingsPoll(); });
   $('reflections-refresh').addEventListener('click', () => void refreshStatus(true, 'reflection-run-feedback'));
+  window.setInterval(() => {
+    if (!document.hidden && (reflectionReceipt?.waiting || state.maintenance.reflection?.running === true)) void refreshStatus();
+  }, 3000);
   $('profiles-refresh').addEventListener('click', () => void refreshStatus(true));
   $('open-folder').addEventListener('click', () => void mutate('open-folder', '/api/open-folder', {}, 'folder-feedback', '已请求本机打开数据文件夹。', { refresh: false }));
   $('logs-refresh').addEventListener('click', () => void loadLogs());
   $('open-logs').addEventListener('click', () => void mutate('open-logs', '/api/open-logs', {}, 'logs-feedback', '已请求本机打开日志文件夹。', { refresh: false }));
-  $('open-harness').addEventListener('click', openHost);
   $('background-toggle').addEventListener('click', toggleBackground);
   window.addEventListener('beforeunload', (event) => {
-    if (!hasUnsavedDrafts() && !settingsSaving && !settingsReceipt?.uncertain && !restartInFlight && ![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.saving || draft.awaiting)) return;
+    if (activeRun?.source !== 'email-review' && !emailReviewPreparing && !routineDraftDirty && !routineDraftBlocked && !routineBusy && !routineUncertain && !hasUnsavedDrafts() && !emailBusy && !settingsSaving && !settingsReceipt?.uncertain && !restartInFlight && ![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.saving || draft.awaiting)) return;
     event.preventDefault();
     event.returnValue = '';
   });

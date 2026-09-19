@@ -4,6 +4,8 @@ import { openSync, closeSync, fchmodSync, constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { Records, BOOLEAN_SETTINGS } from './records.mjs';
 
+const boundedLimit = (limit, fallback) => Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.trunc(limit))) : fallback;
+
 export class Store {
   constructor(file) {
     this.records = new Records(dirname(file));
@@ -17,7 +19,12 @@ export class Store {
         CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY,text TEXT NOT NULL,occurredAt TEXT NOT NULL,createdAt TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY,text TEXT NOT NULL,createdAt TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY,sessionId TEXT NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,createdAt TEXT NOT NULL,status TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS record_migrations (version TEXT PRIMARY KEY);`);
+        CREATE TABLE IF NOT EXISTS message_sources (id TEXT PRIMARY KEY, source TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS record_migrations (version TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS routine_runs (id TEXT PRIMARY KEY,jobId TEXT NOT NULL,windowKey TEXT NOT NULL,status TEXT NOT NULL,startedAt TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(jobId,windowKey));
+        CREATE INDEX IF NOT EXISTS routine_runs_startedAt ON routine_runs(startedAt);`);
+      this.db.prepare("UPDATE routine_runs SET status='cancelled',data=json_set(data,'$.status','cancelled','$.reason',?,'$.finishedAt',?) WHERE status='running'")
+        .run('宿主重启，中断的任务不会自动重放', new Date().toISOString());
       if (!this.db.prepare('SELECT version FROM record_migrations WHERE version=?').get('markdown-v1')) {
         this.db.prepare("UPDATE messages SET status='interrupted' WHERE status='pending'").run();
         const settings = Object.fromEntries(this.db.prepare('SELECT key,value FROM settings').all()
@@ -35,6 +42,10 @@ export class Store {
         if (!this.db.prepare('SELECT version FROM record_migrations WHERE version=?').get('profile-defaults-v1')) {
           this.records.migrateProfileDefaults();
           this.db.prepare('INSERT OR IGNORE INTO record_migrations VALUES (?)').run('profile-defaults-v1');
+        }
+        if (!this.db.prepare('SELECT version FROM record_migrations WHERE version=?').get('routine-default-v1')) {
+          this.records.migrateRoutines();
+          this.db.prepare('INSERT OR IGNORE INTO record_migrations VALUES (?)').run('routine-default-v1');
         }
       });
       // 原业务表保留作迁移恢复来源；此后不再作为日记、记忆或配置的读取来源。
@@ -71,6 +82,48 @@ export class Store {
   todos() { return this.records.todos(); }
   addTodo(text) { return this.records.addTodo(text); }
   updateTodo(id, status, revision) { return this.records.updateTodo(id, status, revision); }
+  routines() { return this.records.routines(); }
+  saveRoutine(input, expectedRevision, id = null, now = new Date()) { return this.records.saveRoutine(input, expectedRevision, id, now); }
+  deleteRoutine(id, revision) { return this.records.deleteRoutine(id, revision); }
+  startRoutineRun(run) {
+    if (!run || ['id', 'jobId', 'windowKey', 'status', 'startedAt'].some(key => typeof run[key] !== 'string' || !run[key]) || !Number.isFinite(Date.parse(run.startedAt))) throw Object.assign(new Error('Routine 运行记录缺少有效字段'), { status: 400 });
+    const data = JSON.stringify(run), entry = JSON.parse(data);
+    const saved = this.db.prepare('INSERT OR IGNORE INTO routine_runs (id,jobId,windowKey,status,startedAt,data) VALUES (?,?,?,?,?,?)')
+      .run(entry.id, entry.jobId, entry.windowKey, entry.status, entry.startedAt, data);
+    return saved.changes ? entry : null;
+  }
+  finishRoutineRun(id, patch) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const previous = this.routineRun(id);
+      if (!previous) { this.db.exec('COMMIT'); return null; }
+      const entry = { ...previous, ...patch, id: previous.id, jobId: previous.jobId, windowKey: previous.windowKey, startedAt: previous.startedAt };
+      if (typeof entry.status !== 'string' || !entry.status) throw Object.assign(new Error('Routine 运行状态无效'), { status: 400 });
+      const data = JSON.stringify(entry);
+      this.db.prepare('UPDATE routine_runs SET status=?,data=? WHERE id=?').run(entry.status, data, id);
+      this.db.exec('COMMIT');
+      return JSON.parse(data);
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch {}
+      throw error;
+    }
+  }
+  routineRuns(jobId = null, limit = 20) {
+    const bounded = boundedLimit(limit, 20);
+    const rows = jobId === null
+      ? this.db.prepare('SELECT data FROM routine_runs ORDER BY startedAt DESC,rowid DESC LIMIT ?').all(bounded)
+      : this.db.prepare('SELECT data FROM routine_runs WHERE jobId=? ORDER BY startedAt DESC,rowid DESC LIMIT ?').all(jobId, bounded);
+    return rows.map(row => JSON.parse(row.data));
+  }
+  routineRun(id) {
+    const row = this.db.prepare('SELECT data FROM routine_runs WHERE id=?').get(id);
+    return row ? JSON.parse(row.data) : null;
+  }
+  recentMessages(start, end, limit = 80) {
+    if ([start, end].some(value => typeof value !== 'string' || !Number.isFinite(Date.parse(value)))) throw Object.assign(new Error('消息查询时间必须是有效日期字符串'), { status: 400 });
+    return this.db.prepare("SELECT id,role,content,createdAt,sessionId FROM messages WHERE status='complete' AND role IN ('user','assistant') AND createdAt>=? AND createdAt<? ORDER BY createdAt DESC,rowid DESC LIMIT ?")
+      .all(new Date(start).toISOString(), new Date(end).toISOString(), boundedLimit(limit, 80));
+  }
   profiles() { return this.records.profiles(); }
   saveProfile(name, text, revision) { return this.records.saveProfile(name, text, revision); }
   saveProfileBody(name, body, revision) { return this.records.saveProfileBody(name, body, revision); }
@@ -80,12 +133,19 @@ export class Store {
   memoryCandidates() { return this.records.memoryCandidates(); }
   addMemoryCandidates(entries) { return this.records.addMemoryCandidates(entries); }
   decideCandidate(id, accept) { return this.records.decideCandidate(id, accept); }
-  messages() { return this.db.prepare('SELECT id,role,content,createdAt,status FROM messages WHERE sessionId=? ORDER BY rowid').all(this.get('sessionId')); }
-  addMessage(role, content, status = 'complete') {
+  messages() {
+    return this.db.prepare('SELECT m.id,m.role,m.content,m.createdAt,m.status,s.source FROM messages m LEFT JOIN message_sources s ON s.id=m.id WHERE m.sessionId=? ORDER BY m.rowid')
+      .all(this.get('sessionId')).map(({ source, ...entry }) => source ? { ...entry, source } : entry);
+  }
+  addMessage(role, content, status = 'complete', source = null) {
     if (typeof content !== 'string' || !content.isWellFormed()) throw Object.assign(new Error('正文必须是有效的 Unicode 字符串'), { status: 400 });
-    const entry = { id: randomUUID(), role, content, createdAt: new Date().toISOString(), status };
+    if (source !== null && source !== 'email-review') throw new Error('Invalid message source');
+    const entry = { id: randomUUID(), role, content, createdAt: new Date().toISOString(), status, ...(source ? { source } : {}) };
     const sessionId = this.get('sessionId');
-    this.writeMessages(sessionId, () => this.db.prepare('INSERT INTO messages VALUES (?,?,?,?,?,?)').run(entry.id, sessionId, role, content, entry.createdAt, status));
+    this.writeMessages(sessionId, () => {
+      this.db.prepare('INSERT INTO messages VALUES (?,?,?,?,?,?)').run(entry.id, sessionId, role, content, entry.createdAt, status);
+      if (source) this.db.prepare('INSERT INTO message_sources VALUES (?,?)').run(entry.id, source);
+    });
     return entry;
   }
   updateMessage(id, content, status) {

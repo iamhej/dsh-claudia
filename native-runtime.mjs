@@ -5,15 +5,18 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent';
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 
 export class NativeRuntime {
-  constructor(ctx, store) {
+  constructor(ctx, store, options = {}) {
     // 从宿主路径服务取边界，不采用浏览器、模型或启动终端传入的工作目录。
     this.fileRoot='';
     try { const path=dirname(ctx.dshHomePath('claudia')); if(isAbsolute(path))this.fileRoot=realpathSync(path); } catch { /* 无法确认范围时继续拒绝全部操作。 */ }
     this.ctx=ctx;this.store=store;this.handles=new Map();this.closed=false;this.error='';this.verifiedRoute='';this.running=null;this.pending=new Map();this.closeTask=null;this.disposals=new Map();this.restricted=new WeakSet();
+    this.sessionKey = options.sessionKey ?? 'harnessSessions';
+    if (options.setup) this.setup = options.setup;
+    if (options.restrict) this.restrict = options.restrict;
     this.offCreated=ctx.on('agent/created',({agent})=>{
-      if(this.store.get('harnessSessions',[]).includes(String(agent.session.id)))this.restrict(agent.ctx);
+      if(this.store.get(this.sessionKey,[]).includes(String(agent.session.id)))this.restrict(agent.ctx, String(agent.session.id));
     });
-    for(const agent of ctx.agents.list())if(this.store.get('harnessSessions',[]).includes(String(agent.session.id)))this.restrict(agent.ctx);
+    for(const agent of ctx.agents.list())if(this.store.get(this.sessionKey,[]).includes(String(agent.session.id)))this.restrict(agent.ctx, String(agent.session.id));
   }
   selection() {
     const value=this.ctx.agentDefaultModel.currentSelection();
@@ -57,8 +60,8 @@ export class NativeRuntime {
     const task=this._prepare(id).finally(()=>this.pending.delete(id));this.pending.set(id,task);return task;
   }
   async _prepare(id) {
-    const known=this.store.get('harnessSessions',[]);
-    if(!known.includes(id))this.store.set('harnessSessions',[...known,id]);
+    const known=this.store.get(this.sessionKey,[]);
+    if(!known.includes(id))this.store.set(this.sessionKey,[...known,id]);
     const options={agentOptions:{...this.selection(),maxTokens:4096},setup:this.setup};
     // Resume first to close both crash windows between host persistence and UI metadata.
     // Only the precise NotFound error allows creation; corruption/ownership never does.
@@ -72,7 +75,7 @@ export class NativeRuntime {
     }
     if(this.closed){await handle.dispose();throw new Error('插件已关闭');}
     this.handles.set(id,handle);
-    if(!known.includes(id))this.store.set('harnessSessions',[...known,id]);
+    if(!known.includes(id))this.store.set(this.sessionKey,[...known,id]);
     return handle;
   }
   async run(id,text,{onDelta=()=>{}}={}) {

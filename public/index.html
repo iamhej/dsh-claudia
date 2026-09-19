@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#eaf0f3">
   <title>Claudia · 留一点空间给自己</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/marked.js" defer></script>
+  <script src="/chat-markdown.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -36,8 +38,8 @@
           <div class="identity-copy"><h1><span id="assistant-name" class="display-name" title="Claudia">Claudia</span><span class="brand-period" aria-hidden="true">.</span></h1><p>留一点空间给自己</p></div>
         </div>
         <div class="header-actions">
-          <button id="runtime-button" class="runtime-pill" type="button" aria-label="查看运行状态"><span class="status-dot"></span><span id="runtime-label">正在读取状态</span></button>
-          <button id="settings-open" class="icon-button settings-trigger" type="button" title="名字与设置" aria-label="打开 Claudia 的设置"><svg class="icon"><use href="#i-settings"/></svg></button>
+          <button id="runtime-button" class="runtime-pill" type="button" aria-label="打开设置数据与维护页，查看运行状态" aria-haspopup="dialog" aria-controls="settings-dialog"><span class="status-dot"></span><span id="runtime-label">正在读取状态</span></button>
+          <button id="settings-open" class="icon-button settings-trigger" type="button" title="名字与设置" aria-label="打开 Claudia 的设置" aria-haspopup="dialog" aria-controls="settings-dialog"><svg class="icon"><use href="#i-settings"/></svg></button>
         </div>
       </header>
 
@@ -56,6 +58,11 @@
           <p class="welcome-footnote">点选只会填入输入框，由你决定何时发送。</p>
         </section>
         <div id="message-list" class="message-list" role="log" aria-label="对话消息" aria-live="off"></div>
+        <section id="routine-chat-events" class="routine-events" aria-labelledby="routine-chat-title" hidden>
+          <h3 id="routine-chat-title">Routine · 独立事件</h3>
+          <p class="field-help">仅同步展示，未加入模型历史，也不会作为聊天上下文发送。</p>
+          <div id="routine-chat-list" class="entry-list"></div>
+        </section>
       </div>
 
       <div class="composer-area">
@@ -80,8 +87,8 @@
           <button id="tab-today" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="panel-today" data-tab="today">Today</button>
           <button id="tab-journal" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-journal" data-tab="journal" tabindex="-1">Journal</button>
           <button id="tab-todo" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-todo" data-tab="todo" tabindex="-1">Todo</button>
+          <button id="tab-routine" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-routine" data-tab="routine" tabindex="-1">Routine</button>
           <button id="tab-memories" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-memories" data-tab="memories" tabindex="-1">记忆</button>
-          <button id="tab-capabilities" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-capabilities" data-tab="capabilities" tabindex="-1">能力</button>
         </nav>
         <span class="local-label"><span class="status-dot"></span>本地空间</span>
       </header>
@@ -110,6 +117,11 @@
             <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>最新每日回顾</h3><button id="today-reflection-open" class="text-button" type="button">查看回顾<svg class="icon"><use href="#i-arrow"/></svg></button></div>
             <div id="today-reflection"></div>
           </article>
+          <article id="today-routine-section" class="glass-card" hidden>
+            <div class="section-heading"><h3>Routine · 已投递</h3><button class="text-button" type="button" data-go="routine">管理 Routine<svg class="icon"><use href="#i-arrow"/></svg></button></div>
+            <p class="field-help">展示最近 20 次运行中成功投递的摘要与资讯，可展开查看依据与来源；不加入模型历史。</p>
+            <div id="today-routine-list" class="entry-list"></div>
+          </article>
           <article class="glass-card memory-preview-card">
             <div class="section-heading"><h3><svg class="icon"><use href="#i-memory"/></svg>值得记住的你</h3><button class="text-button" type="button" data-go="memories">管理记忆<svg class="icon"><use href="#i-arrow"/></svg></button></div>
             <p class="card-description compact">只展示你亲自确认过的内容，不替你下定义。</p>
@@ -129,8 +141,7 @@
             <form id="journal-form">
               <label class="field-label" for="journal-input">此刻，想记下什么？</label>
               <textarea id="journal-input" class="note-input" rows="3" maxlength="5000" placeholder="做完的一件事、散步时的念头，或者今天的心情…" required></textarea>
-              <div class="entry-toolbar"><div class="time-field"><label for="journal-time">发生时间 <span>· 可选</span></label><input id="journal-time" type="datetime-local" aria-describedby="journal-time-hint"></div><button id="journal-save" class="primary-button" type="submit" disabled>保存记录<svg class="icon"><use href="#i-plus"/></svg></button></div>
-              <p id="journal-time-hint" class="field-help">默认当前本地时间；留空时由服务端记录当前时间。</p>
+              <div class="entry-toolbar"><p class="field-help">保存时由服务端记录当前时间。</p><button id="journal-save" class="primary-button" type="submit" disabled>保存记录<svg class="icon"><use href="#i-plus"/></svg></button></div>
               <p id="journal-feedback" class="form-feedback" role="status" hidden></p>
             </form>
           </article>
@@ -140,29 +151,18 @@
           </section>
           <section id="journal-reflections" role="tabpanel" aria-labelledby="journal-tab-reflections" hidden>
             <article class="glass-card">
-              <div class="section-heading"><h3>把过去一天，轻轻整理一下。</h3><button id="reflection-run" class="secondary-button" type="button" disabled>生成一次回顾</button></div>
-              <p class="field-help">自动回顾默认关闭；开启后每天本地时间 05:00，使用过去 24 小时的 Journal、Todo 和可选应用时长。生成会发送这些内容给宿主模型并产生费用；手动生成也会单独确认。</p>
+              <div class="section-heading"><h3>把过去一天，轻轻整理一下。</h3><button id="reflection-run" class="secondary-button" type="button" disabled>手动运行一次</button></div>
+              <p class="field-help">自动回顾默认关闭。需要先在设置中保存并启用每日回顾；手动运行补跑最近本地 05:00 一期，已有结果不重复生成，不改变统计窗口或自动开关。使用该期过去 24 小时的 Journal、Todo 和可选应用时长，发送给宿主模型并产生费用，每次单独确认。</p>
+              <p class="field-help">约 300 字，最多 500 字、无最低字数；提炼洞察，不照抄流水账。</p>
+              <button id="reflection-settings-open" class="text-button" type="button">打开自动化设置与状态</button>
               <p id="reflection-status" class="field-help" role="status">正在读取回顾状态…</p>
               <p id="reflection-run-feedback" class="form-feedback" role="status" hidden></p>
             </article>
-            <article class="glass-card">
-              <div class="reflection-filters"><div class="time-field"><label for="reflection-date">按回顾结束日期筛选 · 本地时间</label><input id="reflection-date" type="date"></div><button id="reflection-date-clear" class="text-button" type="button">全部日期</button><button id="reflections-refresh" class="text-button" type="button">刷新回顾</button></div>
-              <label class="field-label" for="reflection-select">已保存的回顾</label>
-              <select id="reflection-select" class="select-input" aria-describedby="reflection-meta" disabled></select>
-              <div id="reflection-empty"></div>
-              <div id="reflection-detail" hidden>
-                <p id="reflection-meta" class="field-help"></p>
-                <p id="reflection-body" class="entry-text reflection-body"></p>
-                <button id="reflection-edit" class="text-button" type="button">编辑这篇回顾</button>
-                <form id="reflection-form" hidden>
-                  <label class="field-label" for="reflection-input">回顾正文 · 本地 Markdown 原文</label>
-                  <textarea id="reflection-input" class="note-input reflection-input" rows="10" spellcheck="false"></textarea>
-                  <p id="reflection-conflict" class="form-feedback is-error" role="status" hidden></p>
-                  <div class="form-actions"><button id="reflection-reload" class="secondary-button" type="button">载入最新版本</button><button id="reflection-save" class="primary-button" type="submit" disabled>保存回顾</button></div>
-                </form>
-                <p id="reflection-feedback" class="form-feedback" role="status" hidden></p>
-              </div>
-            </article>
+            <div class="list-heading"><h3>已保存的回顾 · 从新到旧</h3><button id="reflections-refresh" class="text-button" type="button">刷新回顾与状态</button></div>
+            <p class="field-help">默认显示 7 条，每次加载 7 条。刷新、加载更多和切换标签均保留每张卡片的编辑草稿。</p>
+            <div id="reflection-empty"></div>
+            <div id="reflection-list" class="entry-list" aria-label="每日回顾卡片"></div>
+            <div class="form-actions"><span id="reflection-count" class="field-help" role="status"></span><button id="reflections-more" class="secondary-button" type="button" hidden>再加载 7 条</button></div>
           </section>
         </section>
 
@@ -176,6 +176,41 @@
           <details id="todo-done" class="archive-section"><summary id="todo-done-summary">已完成 · 0</summary><div id="todo-done-list" class="entry-list"></div></details>
           <details id="todo-dismissed" class="archive-section"><summary id="todo-dismissed-summary">已忽略 · 0</summary><div id="todo-dismissed-list" class="entry-list"></div></details>
           <p class="space-footnote">勾选表示完成；「忽略」不算完成。折叠归档，不删除记录。</p>
+        </section>
+
+        <section id="panel-routine" class="tab-panel" role="tabpanel" aria-labelledby="tab-routine" tabindex="0" hidden>
+          <div class="page-intro"><p class="eyebrow">ROUTINE / 留给日常的约定</p><h2>让想起，有一个时间。</h2><p>写下希望整理的事，按自己的节奏启用。新任务默认停用。</p></div>
+          <div class="soft-notice"><svg class="icon"><use href="#i-lock"/></svg><div><strong id="routine-capability">正在读取 Routine 联网能力…</strong><p id="routine-capability-detail">是否可联网以宿主能力报告为准，接线可用不代表实际搜索成功。默认任务仍停用，由你自行启用。</p></div></div>
+          <article class="glass-card entry-card">
+            <div class="section-heading"><h3 id="routine-form-title">新建 Routine</h3><button id="routine-new" class="text-button" type="button">新建任务</button></div>
+            <form id="routine-form">
+              <fieldset id="routine-fields" class="routine-fields">
+                <div class="field"><label for="routine-name">名称</label><input id="routine-name" type="text" required autocomplete="off" placeholder="例如：一天的小结"></div>
+                <label class="field-label" for="routine-prompt">希望如何整理？</label>
+                <textarea id="routine-prompt" class="note-input" rows="3" required placeholder="自由描述你想关注的事、摘要重点和表达方式…"></textarea>
+                <div class="routine-schedule">
+                  <div class="field"><label for="routine-type">执行频率</label><select id="routine-type" class="select-input"><option value="daily">每日</option><option value="weekly">每周</option><option value="interval">固定间隔</option></select></div>
+                  <div id="routine-time-field" class="field"><label for="routine-time">本地时间</label><input id="routine-time" type="time" value="11:00" required></div>
+                  <div id="routine-hours-field" class="field" hidden><label for="routine-hours">间隔小时 · 1–168 整数</label><input id="routine-hours" type="number" min="1" max="168" step="1" value="6" disabled required></div>
+                </div>
+                <fieldset id="routine-days" class="routine-days" hidden disabled><legend>每周几 · 至少选择一天</legend><label><input type="checkbox" value="1">周一</label><label><input type="checkbox" value="2">周二</label><label><input type="checkbox" value="3">周三</label><label><input type="checkbox" value="4">周四</label><label><input type="checkbox" value="5">周五</label><label><input type="checkbox" value="6">周六</label><label><input type="checkbox" value="0">周日</label></fieldset>
+                <label class="check-field routine-check"><input id="routine-network" type="checkbox" aria-describedby="routine-network-help"><span id="routine-network-label">允许联网 · 等待能力报告</span></label>
+                <p id="routine-network-help" class="field-help">仅抽象话题词进入独立联网执行并发给 Harness 搜索提供方，可能额外收费；是否可执行以当前能力为准。</p>
+                <div class="field routine-delivery"><label for="routine-delivery">结果投递到</label><select id="routine-delivery" class="select-input"><option value="today">Today</option><option value="both">Today + 对话独立事件区</option></select><p class="field-help">对话事件仅展示，未加入模型历史。</p></div>
+                <label class="check-field"><input id="routine-enabled" type="checkbox" aria-describedby="routine-sharing-help"><span>保存后启用定时执行</span></label>
+                <p id="routine-sharing-help" class="field-help">启用、修改已启用任务或手动运行均需确认数据共享：有限本地记录与人格设定发给所选模型。联网任务另需确认：模型推导抽象话题，再独立搜索；仅匿名公开网页 GET，无 Cookie、无登录，不允许文件、Shell 或任务管理工具。</p>
+              </fieldset>
+              <p id="routine-draft-status" class="field-help" role="status">新任务默认停用</p>
+              <p id="routine-feedback" class="form-feedback" role="status" hidden></p>
+              <p class="field-help">刷新只更新任务与运行状态，不取消编辑，也不覆盖名称或正文草稿。</p>
+              <div class="form-actions routine-form-actions"><button id="routine-recheck" class="text-button" type="button">刷新</button><button id="routine-cancel-edit" class="secondary-button" type="button" hidden>取消编辑</button><button id="routine-rebase" class="secondary-button" type="button" hidden>核对后沿用草稿</button><button id="routine-save" class="primary-button" type="submit" disabled>保存任务</button></div>
+            </form>
+          </article>
+          <div class="list-heading"><h3>已启用</h3><span id="routine-count">正在读取</span></div>
+          <p id="routine-status" class="field-help" role="status"></p>
+          <div id="routine-list" class="entry-list"></div>
+          <details id="routine-disabled" class="archive-section"><summary id="routine-disabled-summary">已停用 · 0（含默认资讯任务）</summary><div id="routine-disabled-list" class="entry-list"></div></details>
+          <p class="space-footnote">停用任务可按当前能力手动运行，每次单独确认，不改变启用状态。联网任务无本地记录时可用兜底话题。定时执行依赖宿主在线，关机或休眠期间不保证执行。</p>
         </section>
 
         <section id="panel-memories" class="tab-panel" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden>
@@ -194,31 +229,6 @@
           <div class="list-heading"><h3>已确认的记忆</h3><span id="memory-count">正在读取</span></div>
           <div id="memory-list" class="entry-list"></div>
         </section>
-
-        <section id="panel-capabilities" class="tab-panel" role="tabpanel" aria-labelledby="tab-capabilities" tabindex="0" hidden>
-          <div class="page-intro"><p class="eyebrow">CAPABILITIES / 真实的边界</p><h2>知道能做什么，也很重要。</h2><p>只展示当前状态，不把计划中的能力当作已经连接。</p></div>
-          <article class="glass-card">
-            <div class="section-heading"><h3><svg class="icon"><use href="#i-terminal"/></svg>Harness runtime</h3><span id="harness-badge" class="quiet-tag">正在读取</span></div>
-            <dl class="runtime-details"><div><dt>安装状态</dt><dd id="harness-installed">—</dd></div><div><dt>运行版本</dt><dd id="harness-version">—</dd></div><div><dt>模型路由</dt><dd id="model-configured">—</dd></div><div><dt>宿主连接</dt><dd id="model-connected">—</dd></div><div><dt>模型验证</dt><dd id="model-verified">—</dd></div><div><dt>凭据来源</dt><dd id="credential-source">—</dd></div><div><dt>Provider</dt><dd id="model-provider">—</dd></div><div><dt>当前模型</dt><dd id="model-name">—</dd></div></dl>
-            <p class="field-help">宿主连接不代表模型网络或凭据已经验证。模型路由缺失或请求失败时，请回 Harness 的模型设置处理；这里不读取、不显示密钥。</p>
-            <p id="runtime-error" class="form-feedback is-error" hidden></p>
-            <button id="capabilities-settings" class="secondary-button" type="button">查看名字与宿主配置<svg class="icon"><use href="#i-arrow"/></svg></button>
-          </article>
-          <article class="glass-card">
-            <div class="section-heading"><h3><svg class="icon"><use href="#i-link"/></svg>宿主配置 ≠ 插件权限</h3><span class="quiet-tag">权限独立</span></div>
-            <p class="card-description">模型齿轮与连接器配置由 Harness 宿主管理。Claudia 未开放任意外部工具；宿主装有连接器，不代表本插件获准调用，也不代表这里已连接。此页不枚举或猜测宿主的第三方账号。</p>
-            <button id="open-harness" class="secondary-button" type="button" disabled>打开 Harness<svg class="icon"><use href="#i-arrow"/></svg></button>
-            <p id="host-open-hint" class="field-help">由本机服务打开实际宿主已认证地址，不拼接模型或连接器深链。</p>
-            <p id="host-open-feedback" class="form-feedback" role="status" hidden></p>
-          </article>
-          <article class="glass-card">
-            <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>应用使用时长</h3><span id="activity-badge" class="quiet-tag">尚未读取</span></div>
-            <dl class="runtime-details"><div><dt>实际采集开关</dt><dd id="activity-enabled-state">—</dd></div><div><dt>运行状态</dt><dd id="activity-running-state">—</dd></div><div><dt>来源</dt><dd id="activity-source">—</dd></div><div><dt>已汇总时长</dt><dd id="activity-total">—</dd></div></dl>
-            <div id="activity-apps"></div><p id="activity-error" class="form-feedback is-error" role="status" hidden></p>
-            <p class="field-help">默认关闭。仅记录应用名称与前台使用时长，不采集窗口标题、网页、屏幕、键盘或应用正文。设置中的开关保存后，以此处宿主报告为准。</p>
-          </article>
-          <article class="glass-card boundary-card"><h3>任务运行，依赖宿主在线。</h3><ul><li>连续对话、Journal 与 Todo 各自保留</li><li>每日回顾、记忆候选和稳定版更新均需主动开启</li><li>人格文件在本地，但会作为模型上下文发送</li></ul><p>关闭浏览器不等于停止宿主；退出宿主后不能保证定时执行。可在设置中确认启用 macOS 后台服务以保持运行，电脑关机或休眠期间不保证执行。</p></article>
-        </section>
       </div>
     </section>
   </main>
@@ -230,8 +240,10 @@
       <button id="settings-tab-persona" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-persona" data-settings-tab="persona" tabindex="-1">人格与记忆</button>
       <button id="settings-tab-automation" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-automation" data-settings-tab="automation" tabindex="-1">自动化</button>
       <button id="settings-tab-maintenance" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-maintenance" data-settings-tab="maintenance" tabindex="-1">数据与维护</button>
+      <button id="settings-tab-capabilities" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-capabilities" data-settings-tab="capabilities" tabindex="-1">能力</button>
+      <button id="settings-tab-plugins" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-plugins" data-settings-tab="plugins" tabindex="-1">插件</button>
     </nav>
-    <p class="settings-edit-hint field-help">修改后点击下方保存设置。</p>
+    <p class="settings-edit-hint field-help">名字、正文与普通开关点击下方保存设置；邮件 Loader 开关和邮箱配置各自独立确认、独立保存，不提交其它草稿。</p>
     <div id="settings-content" class="settings-content">
       <section id="settings-panel-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0">
         <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" form="settings-form" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含换行；留空恢复默认名字。修改后点击下方保存设置，不会清空对话或记录。</p></div>
@@ -259,7 +271,11 @@
           <h3 id="automation-title">由你开启的自动功能</h3>
           <div class="setting-switch"><label for="activity-enabled">应用使用时长</label><input id="activity-enabled" type="checkbox" role="switch" aria-describedby="activity-enabled-help activity-enabled-status settings-activity-status" disabled><p id="activity-enabled-help" class="field-help">只记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文。可供每日回顾使用。</p><p id="activity-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
           <details id="settings-activity-details" class="service-details" hidden><summary>查看时长组件异常</summary><p id="settings-activity-status" class="field-help" role="status" hidden></p></details>
-          <div class="setting-switch"><label for="reflection-enabled">每日回顾</label><input id="reflection-enabled" type="checkbox" role="switch" aria-describedby="reflection-enabled-help reflection-enabled-status" disabled><p id="reflection-enabled-help" class="field-help">每天本地 05:00，把过去 24 小时的 Journal、Todo 和可选应用时长发送给模型整理，会产生费用。</p><p id="reflection-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
+          <div class="setting-switch"><label for="reflection-enabled">每日回顾</label><input id="reflection-enabled" type="checkbox" role="switch" aria-describedby="reflection-enabled-help reflection-enabled-status" disabled><p id="reflection-enabled-help" class="field-help">每天本地 05:00，把过去 24 小时的 Journal、Todo 和可选应用时长发送给模型整理，会产生费用。约 300 字，最多 500 字、无最低字数，重在洞察而非流水账。</p><p id="reflection-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
+          <div class="reflection-run-actions"><button id="settings-reflection-run" class="secondary-button" type="button" disabled>手动运行一次</button><button id="settings-reflection-status-open" class="text-button" type="button" aria-controls="settings-reflection-details">查看执行状态</button></div>
+          <p class="field-help">补跑最近本地 05:00 一期，已有结果不重复生成；需要保存并启用每日回顾。不改变统计窗口或自动开关，不提交其它设置草稿。</p>
+          <p id="settings-reflection-run-feedback" class="form-feedback" role="status" hidden></p>
+          <details id="settings-reflection-details" class="service-details"><summary>每日回顾执行状态</summary><p id="settings-reflection-status" class="field-help" role="status"></p><button id="settings-reflection-refresh" class="text-button" type="button">刷新执行状态</button></details>
           <div class="setting-switch"><label for="auto-update-enabled">自动更新</label><input id="auto-update-enabled" type="checkbox" role="switch" aria-describedby="auto-update-enabled-help auto-update-enabled-status" disabled><p id="auto-update-enabled-help" class="field-help">每天本地 06:00 检查并安装稳定版，可能重启服务、短暂断连。更新应保留已有数据，结果以服务返回状态为准。</p><p id="auto-update-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
           <p class="field-help">服务运行时会按计划执行，无需保持浏览器打开。</p>
           <details id="maintenance-details" class="service-details" hidden><summary>查看最近结果与异常</summary><p id="maintenance-status" class="field-help" role="status"></p></details>
@@ -277,9 +293,12 @@
           <div class="section-heading"><h3 id="data-title">本地数据位置</h3><button id="open-folder" class="secondary-button" type="button" disabled>打开文件夹</button></div>
           <p id="data-directory" class="data-path">尚未读取</p><p id="folder-feedback" class="form-feedback" role="status" hidden></p>
         </section>
-        <section class="settings-section" aria-labelledby="host-settings-title">
-          <div class="section-heading"><h3 id="host-settings-title">Harness 宿主诊断 · 只读</h3></div>
-          <dl class="runtime-details"><div><dt>Provider</dt><dd id="settings-provider">—</dd></div><div><dt>模型</dt><dd id="settings-model">—</dd></div><div><dt>凭据来源</dt><dd id="settings-credential-source">—</dd></div><div><dt>模型验证</dt><dd id="settings-model-verified">—</dd></div></dl>
+        <section class="settings-section" aria-labelledby="harness-runtime-title">
+          <div class="section-heading"><h3 id="harness-runtime-title"><svg class="icon"><use href="#i-terminal"/></svg>Harness runtime</h3><span id="harness-badge" class="quiet-tag">正在读取</span></div>
+          <dl class="runtime-details"><div><dt>安装状态</dt><dd id="harness-installed">—</dd></div><div><dt>运行版本</dt><dd id="harness-version">—</dd></div><div><dt>模型路由</dt><dd id="model-configured">—</dd></div><div><dt>宿主连接</dt><dd id="model-connected">—</dd></div><div><dt>模型验证</dt><dd id="model-verified">—</dd></div><div><dt>凭据来源</dt><dd id="credential-source">—</dd></div><div><dt>Provider</dt><dd id="model-provider">—</dd></div><div><dt>当前模型</dt><dd id="model-name">—</dd></div></dl>
+          <p class="field-help">宿主连接不代表模型网络或凭据已经验证。模型路由缺失或请求失败时，请回 Harness 的模型设置处理；这里不读取、不显示密钥。</p>
+          <p id="runtime-error" class="form-feedback is-error" hidden></p>
+          <button id="runtime-settings" class="secondary-button" type="button" aria-controls="settings-panel-general">查看名字与宿主配置<svg class="icon"><use href="#i-arrow"/></svg></button>
         </section>
         <section class="settings-section" aria-labelledby="file-access-title">
           <h3 id="file-access-title">对话文件权限</h3>
@@ -306,7 +325,89 @@
         </section>
         <div class="reset-section"><div><h3>重新开始模型上下文</h3><p>清空当前对话视图，保留本地记录与记忆。不会撤回已发送的内容。</p></div><button id="reset-session" class="text-button danger-text" type="button" disabled>重置对话</button></div>
       </section>
+      <section id="settings-panel-capabilities" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-capabilities" tabindex="0" hidden>
+        <div class="page-intro"><p class="eyebrow">CAPABILITIES / 真实的边界</p><h2>知道能做什么，也很重要。</h2><p>只展示当前状态，不把计划中的能力当作已经连接。</p></div>
+        <article class="glass-card">
+          <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>应用使用时长</h3><span id="activity-badge" class="quiet-tag">尚未读取</span></div>
+          <dl class="runtime-details"><div><dt>实际采集开关</dt><dd id="activity-enabled-state">—</dd></div><div><dt>运行状态</dt><dd id="activity-running-state">—</dd></div><div><dt>来源</dt><dd id="activity-source">—</dd></div><div><dt>已汇总时长</dt><dd id="activity-total">—</dd></div></dl>
+          <div id="activity-apps"></div><p id="activity-error" class="form-feedback is-error" role="status" hidden></p>
+          <p class="field-help">默认关闭。仅记录应用名称与前台使用时长，不采集窗口标题、网页、屏幕、键盘或应用正文。设置中的开关保存后，以此处宿主报告为准。</p>
+        </article>
+        <article class="glass-card boundary-card"><h3>任务运行，依赖宿主在线。</h3><ul><li>连续对话、Journal 与 Todo 各自保留</li><li>每日回顾、记忆候选和稳定版更新均需主动开启</li><li>人格文件在本地，但会作为模型上下文发送</li></ul><p>关闭浏览器不等于停止宿主；退出宿主后不能保证定时执行。可在设置中确认启用 macOS 后台服务以保持运行，电脑关机或休眠期间不保证执行。</p></article>
+      </section>
+      <section id="settings-panel-plugins" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-plugins" tabindex="0" hidden>
+        <section class="settings-section" aria-labelledby="plugins-title">
+          <div class="section-heading"><h3 id="plugins-title">非系统扩展</h3><button id="plugins-refresh" class="text-button" type="button" aria-controls="plugins-list">刷新插件</button></div>
+          <p class="field-help">仅展示当前 profile 的非系统扩展（当前为 email），过滤 @deepseek-ai/ 系统扩展及 dsh-claudia；不枚举依赖树。进入此页或手动刷新时独立读取，不修改其它设置草稿。</p>
+          <dl class="runtime-details"><div><dt>Profile</dt><dd id="plugins-profile">尚未读取</dd></div><div><dt>运行阶段观测</dt><dd id="plugins-runtime">尚未读取</dd></div></dl>
+          <p id="plugins-status" class="field-help" role="status" aria-live="polite">进入插件页后读取。</p>
+          <p id="plugins-empty" class="field-help" hidden></p>
+          <ul id="plugins-list" class="plugins-list" aria-label="当前 profile 的正式 bundle 插件" aria-busy="false"></ul>
+        </section>
+        <section class="settings-section" aria-labelledby="email-title">
+          <div class="section-heading"><h3 id="email-title">email · 宿主邮件扩展</h3><button id="email-refresh" class="text-button" type="button">刷新邮件状态</button></div>
+          <div class="setting-switch"><label for="email-enabled">启用 email · Loader</label><input id="email-enabled" type="checkbox" disabled aria-describedby="email-help email-status"><p id="email-help" class="field-help">默认关闭，以服务端保存值为准。此开关单独保存、重启生效，不修改下方邮箱账号、不提交其它设置草稿；Claudia 普通聊天仍无邮件权限。</p><p id="email-status" class="field-help switch-status" role="status">尚未读取</p></div>
+          <p id="email-runtime" class="field-help" role="status"></p>
+          <p id="email-message" class="field-help" role="status"></p>
+          <p id="email-feedback" class="form-feedback" role="status" hidden></p>
+          <div id="email-restart-actions" hidden><button id="email-restart" class="secondary-button" type="button" disabled>重启以应用邮件开关</button><p id="email-restart-hint" class="field-help">不会自动重启；有未保存草稿时先处理草稿。</p></div>
+          <section class="email-account" aria-labelledby="email-account-title">
+            <div class="section-heading"><h4 id="email-account-title">QQ 邮箱账号</h4><span class="quiet-tag">保存即生效 · 无需重启</span></div>
+            <p id="email-account-help" class="field-help">默认使用 QQ 邮箱，仅支持 qq.com / foxmail.com。可直接在此填写，无需打开宿主页面；账号配置与 Loader 开关各自独立。</p>
+            <p id="email-account-status" class="field-help" role="status" aria-live="polite">首次进入插件页后读取账号配置。</p>
+            <p id="email-account-message" class="field-help" role="status"></p>
+            <article id="email-account-card" class="email-account-card" aria-label="已保存的邮箱配置" hidden>
+              <div class="section-heading"><h4 id="email-account-card-title">已保存配置</h4><span class="quiet-tag">连接未验证</span></div>
+              <dl class="runtime-details"><div><dt>账号</dt><dd id="email-account-card-user"></dd></div><div><dt>支持收信</dt><dd id="email-account-card-receive"></dd></div><div><dt>支持发信</dt><dd id="email-account-card-send"></dd></div></dl>
+              <p class="field-help">这里只展示已保存配置，不代表已连接邮箱。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。仅支持经审批的纯文本新邮件，不支持附件、回复或转发。</p>
+            </article>
+            <div class="form-actions email-account-actions"><button id="email-account-edit" class="secondary-button" type="button" aria-controls="email-account-form" aria-expanded="false" disabled>编辑</button><button id="email-account-reload" class="text-button" type="button" disabled>重新载入</button></div>
+            <form id="email-account-form" autocomplete="off" novalidate aria-describedby="email-account-help email-account-storage" aria-busy="false" hidden>
+              <fieldset id="email-account-fields" disabled>
+                <legend class="sr-only">QQ 邮箱与授权码</legend>
+                <div class="field"><label for="email-account-user">完整邮箱地址</label><input id="email-account-user" type="email" inputmode="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="你的账号@qq.com" aria-describedby="email-account-help"></div>
+                <div class="field"><label for="email-account-password">16 位邮箱授权码 · 不是 QQ 登录密码</label><input id="email-account-password" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" placeholder="仅填写新授权码，不会回显已保存的值" aria-describedby="email-account-password-help email-account-secret-status"><p id="email-account-password-help" class="field-help">在 QQ 邮箱开启 IMAP/SMTP 后生成 16 位英文字母授权码，允许前后空白。留空仅在邮箱地址不变且已有授权码时保留原值；换账号必须填写新授权码。</p></div>
+                <div class="email-account-permissions" aria-label="邮箱收发权限"><label class="check-field"><input id="email-account-receive" type="checkbox" checked aria-describedby="email-account-permissions-help"><span>支持收信</span></label><label class="check-field"><input id="email-account-send" type="checkbox" aria-describedby="email-account-permissions-help"><span>支持发信</span></label></div>
+                <p id="email-account-permissions-help" class="field-help">新配置默认支持收信、不支持发信；已有配置以兼容版返回值为准。勾选发信并保存会启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。当前兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。</p>
+              </fieldset>
+              <p id="email-account-secret-status" class="field-help" role="status">授权码状态尚未读取。</p>
+              <p class="field-help email-server-reference">IMAP imap.qq.com:993 · TLS<br>SMTP smtp.qq.com:465 · TLS</p>
+              <p id="email-account-storage" class="field-help">授权码将保存在本机 Harness 设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。宿主邮件工具之后可使用该账号，宿主页面可能检查账号。本次不主动读信、不发测试邮件，也不开放 Claudia 聊天工具。</p>
+              <div class="form-actions email-account-actions"><button id="email-account-cancel" class="text-button" type="button" disabled>取消编辑</button><button id="email-account-save" class="primary-button" type="submit" disabled>保存邮箱配置</button></div>
+              <p class="field-help">只保存邮箱配置，不提交其它 Settings 草稿。切换标签保留草稿；刷新不会覆盖草稿或保存基线，重新载入需确认放弃草稿。保存失败后清空授权码，并锁定保存直到读回状态；地址相同或“已有授权码”不能证明上次新授权码保存成功。</p>
+            </form>
+            <p id="email-account-feedback" class="form-feedback" role="status" aria-live="polite" hidden></p>
+            <div class="email-review-actions">
+              <div class="field"><label for="email-review-days">查看范围</label><select id="email-review-days" class="select-input" aria-describedby="email-review-help"><option value="7">最近一周</option><option value="30">最近 30 天</option><option value="365">最近一年</option></select></div>
+              <div class="field"><label for="email-review-prompt">分析要求</label><textarea id="email-review-prompt" class="note-input email-review-prompt" rows="2" maxlength="500" aria-describedby="email-review-help">帮我看看最近一周的邮件标题和发件人，标出值得查看、疑似广告、欺诈风险或疑似官方的邮件，并简要说明依据。</textarea></div>
+              <button id="email-review" class="primary-button" type="button" aria-describedby="email-review-help email-review-feedback" disabled>预览并分析邮件</button>
+              <p id="email-review-help" class="field-help">可修改时间范围和分析要求。确认后会分页读取该范围内全部邮件标题与发件人显示名/地址并发送给当前模型，不设 30 封上限；不读取正文、原始邮件或附件，不改变已读状态。发件人字段只能辅助判断疑似广告、欺诈风险或疑似官方邮件，不能单独验证真实身份。普通对话仍无邮件工具。</p>
+              <p id="email-review-feedback" class="form-feedback" role="status" aria-live="polite" hidden></p>
+            </div>
+          </section>
+          <section id="email-qq-guide" class="email-guide" aria-labelledby="email-qq-title">
+            <h4 id="email-qq-title">授权码帮助与可选高级入口</h4>
+            <p class="field-help">在 QQ 邮箱的账号与安全设置中开启 IMAP/SMTP 并生成授权码，不要使用 QQ 登录密码；宿主中的发信审批应保持开启。</p>
+            <a href="https://help.mail.qq.com/detail/106/985?expand=6" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">QQ 邮箱官方帮助</a>
+            <details class="service-details"><summary>高级：可选宿主邮件设置入口</summary>
+              <p id="email-loaded-hint" class="field-help"></p>
+              <button id="email-open-harness" class="secondary-button" type="button" disabled>可选：打开宿主邮件设置<svg class="icon"><use href="#i-arrow"/></svg></button>
+              <p id="email-host-feedback" class="form-feedback" role="status" hidden></p>
+            </details>
+          </section>
+        </section>
+        <section class="settings-section" aria-labelledby="plugins-boundary-title">
+          <h3 id="plugins-boundary-title">安装、账号连接与调用权限各自独立</h3>
+          <p class="field-help">仅 active / loaded 表示宿主已加载，phase 为 null 表示运行阶段未直接观测。账号表单只读写配置，不验证邮件连通性、不授予 Claudia 邮件权限，也不提供安装操作。宿主入口仅供高级管理，可选使用，不填写 token、不猜测深链。</p>
+          <button id="plugins-open-harness" class="secondary-button" type="button" disabled>可选：前往 Harness 管理<svg class="icon"><use href="#i-arrow"/></svg></button>
+          <p id="plugins-host-feedback" class="form-feedback" role="status" hidden></p>
+        </section>
+      </section>
     </div>
+    <section id="settings-action-confirm" class="settings-action-confirm" aria-labelledby="settings-action-title" aria-describedby="settings-action-description" hidden>
+      <h3 id="settings-action-title"></h3><p id="settings-action-description"></p>
+      <div class="form-actions"><button id="settings-action-cancel" class="secondary-button" type="button">取消</button><button id="settings-action-accept" class="primary-button" type="button">确认</button></div>
+    </section>
     <form id="settings-form" class="settings-footer" autocomplete="off">
       <p id="settings-effect" class="form-feedback" role="status" aria-live="polite" hidden></p>
       <p id="settings-feedback" class="form-feedback" role="status" hidden></p>

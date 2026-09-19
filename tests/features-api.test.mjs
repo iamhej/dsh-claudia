@@ -119,8 +119,8 @@ async function fixture(t, options = {}) {
         const maintenance = {
           status: () => ({ running: controls.maintenanceRunning, closed: false, reflection: { state: 'synthetic' } }),
           // 故意不检查开关：关闭开关的 HTTP 断言必须由 server 自己阻止，不能靠替身掩盖。
-          async runReflection() {
-            calls.reflection.push([]);
+          async runReflection(...args) {
+            calls.reflection.push(args);
             context.store.saveReflection({ id: `synthetic-reflection-${calls.reflection.length}`, text: '纯测试回顾', start, end, createdAt: end });
             return maintenance.status();
           },
@@ -464,7 +464,7 @@ test('maintenance busy 阻止 chat/settings/profile/reset/background/reflection�
     ['/api/chat', { text: '不得调用模型' }],
     ['/api/settings', { assistantName: '不得保存', activityEnabled: true }],
     ['/api/profiles/user', { text: '不得保存', revision: before.profiles.user.revision }],
-    ['/api/session/reset', {}], ['/api/background', { enabled: true }], ['/api/reflections/run', {}],
+    ['/api/session/reset', {}], ['/api/background', { enabled: true }], ['/api/reflections/run', { confirmDataSharing: true, requestId: randomUUID() }],
   ]) assertStatus(await f.post(path, body), 409);
   const after = await f.state();
   for (const key of ['settings', 'profiles', 'messages', 'sessionId']) assert.deepEqual(after[key], before[key]);
@@ -483,7 +483,7 @@ test('前台 chat 期间 health 与注入 isBusy 为 true，维护和 settings �
   await f.chatStarted.promise;
   assert.equal((await f.health()).busy, true);
   assert.equal(f.calls.createServices[0].isBusy(), true);
-  assertStatus(await f.post('/api/reflections/run'), 409);
+  assertStatus(await f.post('/api/reflections/run', { confirmDataSharing: true, requestId: randomUUID() }), 409);
   assertStatus(await f.post('/api/settings', { assistantName: '不得写入' }), 409);
   assertStatus(await f.post('/api/background', { enabled: true }), 409);
   assert.deepEqual(f.calls.reflection, []);
@@ -513,20 +513,27 @@ test('background 配置回调未完成时 health/isBusy 置忙并阻止 chat/set
 
 test('reflection 默认关闭及再次关闭后都不能 run；开启本身不运行，显式 POST 才调用维护替身', testOptions, async t => {
   const f = await fixture(t);
-  assertStatus(await f.post('/api/reflections/run'), 400);
+  assertStatus(await f.post('/api/reflections/run', { confirmDataSharing: true, requestId: randomUUID() }), 400);
   assert.deepEqual(f.calls.reflection, []);
   assertStatus(await f.post('/api/settings', { reflectionEnabled: true }), 200);
   assert.deepEqual(f.calls.reflection, []);
   assertStatus(await f.request('/api/reflections/run'), 404);
-  const response = assertStatus(await f.post('/api/reflections/run'), 200);
-  assert.deepEqual(response, f.app.services.maintenance.status());
-  assert.deepEqual(f.calls.reflection, [[]]);
+  assert.deepEqual(f.calls.reflection, []);
+  const requestId = randomUUID(), requestedAt = Date.now();
+  const response = assertStatus(await f.post('/api/reflections/run', { confirmDataSharing: true, requestId }), 202);
+  assert.deepEqual(response, { accepted: true });
+  assert.equal(f.calls.reflection.length, 1);
+  const [date] = f.calls.reflection[0];
+  assert.ok(date instanceof Date);
+  assert.ok(Number.isFinite(date.getTime()));
+  assert.ok(date.getTime() >= requestedAt && date.getTime() <= Date.now());
+  assert.deepEqual(f.calls.reflection, [[date, { manual: true, requestId }]]);
   const reflections = (await f.state()).reflections;
   assert.equal(reflections.length, 1);
   assert.equal(reflections[0].text, '纯测试回顾');
   assertStatus(await f.post('/api/settings', { reflectionEnabled: false }), 200);
-  assertStatus(await f.post('/api/reflections/run'), 400);
-  assert.deepEqual(f.calls.reflection, [[]]);
+  assertStatus(await f.post('/api/reflections/run', { confirmDataSharing: true, requestId: randomUUID() }), 400);
+  assert.deepEqual(f.calls.reflection, [[date, { manual: true, requestId }]]);
   assert.deepEqual((await f.state()).reflections, reflections);
   assert.deepEqual(f.calls.prepare, []);
   assert.deepEqual(f.calls.run, []);
@@ -613,7 +620,7 @@ test('新增写接口统一要求 CSRF 与 JSON，未授权请求不能修改记
     [`/api/todos/${todo.id}`, { status: 'done', revision: todo.revision }],
     ['/api/profiles/user', { text: '不应修改', revision: before.profiles.user.revision }],
     [`/api/reflections/${reflection.id}`, { text: '不应修改', revision: reflection.revision }],
-    ['/api/reflections/run', {}],
+    ['/api/reflections/run', { confirmDataSharing: true, requestId: randomUUID() }],
     [`/api/memory-candidates/${candidate.id}`, { accept: true }],
     ['/api/open-folder', {}], ['/api/open-harness', {}], ['/api/background', { enabled: true }],
     ['/api/settings', { activityEnabled: true }],

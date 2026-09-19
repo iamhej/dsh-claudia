@@ -1,12 +1,31 @@
 # dsh-claudia
 
-> **v0.3.2：新增运行日志，修复后台常驻注册失败留下残留配置的问题。** 日志能记录被信号终止的情况，「它怎么突然没了」终于有迹可查。
+> **v0.3.3：新增 Routine、安全 Markdown、插件管理与受控邮件分析。** 邮件分析只读取标题与发件人元数据，不读取正文或附件。
 
 **让个人 AI 助手不止是一个聊天框。**
 
-DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、记忆和能力。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
+DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、Routine 和记忆。能力及插件管理入口位于设置。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
 
-版本 **0.3.2**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+版本 **0.3.3**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+
+## 0.3.3 更新
+
+- 聊天 AI 回复支持安全 Markdown 展示，存储原文不变；不执行 HTML，也不自动加载远程图片。
+- Routine 支持任务增删改查、启停、手动运行、每日/每周/每 N 小时调度。定义保存在 `routines.md`，运行历史保存在 SQLite；编辑有明确的“取消编辑”，“刷新任务与运行记录”不会取消草稿。
+- 默认“每日资讯 · AI Native”任务停用。私人零工具阶段只推演短话题，独立联网 Agent 只有搜索和网页读取权限，不接收本地原始记录，不可管理任务或文件。推演失败兜底、搜后无值得内容、搜索失败分别处理；对话投递只是事件副本，不写入模型历史。
+- 搜索沿用 Harness 的搜索服务与凭据选择；模型能聊天不代表搜索服务已可用。新版失败记录保留安全错误类别及实际搜索调用次数，不追溯猜测旧错误。搜索来源日期仍依赖 provider 提示与现有校验，未保证每条都是文章发布时间。
+- 设置中的插件页隐藏系统 Bundle 与 Claudia 自身，当前只显示已安装的社区 `dsh-email`。能力页不再显示重复的权限说明模块；Harness runtime 移至“数据与维护”。
+- 邮件扩展默认停用；开关单独确认保存、重启生效，升级保留已有开关。启用并加载后，可在 Claudia「设置 → 插件 → QQ 邮箱账号」填写 qq.com / foxmail.com 地址与 16 位授权码，不需要打开宿主邮件页面。账号配置单独保存、实时生效，不提交其它设置草稿。
+- 简易账号表单支持查看原版 dsh-email 0.11.0；严格分离收信与发信、保存权限和分析邮件需要本 Release 附带的 `dsh-email-0.11.0-claudia.2.tgz` 兼容包。表单复用宿主已注册的 settings namespace、校验与 revision 合并保存，固定 QQ TLS 服务器，不重新注册插件或另建邮件客户端。已有多账号、非 QQ 邮箱、自定义服务器或高级配置时拒绝覆盖；发信审批、文件夹及其它设置保持不变。同地址授权码留空保留原值，更换地址必须填写新授权码。
+- 授权码以密码输入框进入本机受保护接口，交给 Harness 设置文件保存（不是系统钥匙串加密存储）；不写入 Claudia 业务记录或浏览器持久缓存，不返回原值、不记录请求体或透传宿主原始异常。成功、放弃或实际关闭设置时清空输入；冲突/失败后清空授权码并要求明确读回，不自动重试。宿主内部事件/第三方日志另有自身边界，不能据此承诺整个宿主绝无凭据日志。
+- 保存账号不验证邮箱连接，不主动读信或发测试邮件，也不开放 Claudia 普通聊天的邮件工具；宿主其它已授权 Agent 可使用已配置账号，打开宿主邮件页面可能自动检查账号。
+- 独立邮件分析可选择最近一周、最近 30 天或最近一年，并编辑分析要求。确认后按 100 封分页读取所选日期范围内的全部标题与发件人显示名/地址，不设置总封数截断；不会调用正文读取，不下载原始 MIME 或附件，也不改变已读状态。标题与发件人字段会发送给所选模型，可用于标出疑似广告、欺诈风险或疑似官方邮件，但单凭 From 字段不能验证真实身份；数量较多时可能受模型上下文限制或产生更多费用。
+- 邮件开关只支持唯一顶层 `tool-email` 条目及启动时重载 profile。修改前备份，冲突时拒绝覆盖；动态开关、嵌套 group 或额外启动补丁覆盖邮件配置时请在 Harness 管理。安装、启用、已加载与邮箱连通是不同状态，启用第三方邮件插件可能向宿主其它 Agent 注册邮件工具和检查已配置账号。
+- Journal 直接记录机器当前时间，不再要求填写“发生时间”。回顾从新到旧显示卡片，默认 7 条，每次再显示 7 条；目前是前端显示分页，状态接口仍读取全部回顾。
+- 回顾改为约 300 字、最多 500 个非空白 Unicode 字符，无最低字数。汉字、标点、数字和英文字母均计入；强调有依据的洞察，不抄日志凑字数，不自动截断超限输出。
+- “手动运行一次”补跑最近本地 05:00 截止的一期，需先保存开启每日回顾并确认材料外发。已有结果不重写，自动重试耗尽后也可手动补跑；手动请求去重且不重置自动预算，失败/重启不会自动重放该手动请求。受理并不等于生成成功。
+
+邮件兼容包是在 dsh-email 0.11.0 基础上的保守兼容版本：默认只收信；只有明确开启发送并逐次人工确认时才允许纯文本新邮件，附件发送、回复和转发保持禁用。它是独立 Bundle，不会因为安装 Claudia 自动获得普通聊天权限。
 
 ## 0.3.2 更新
 
@@ -37,7 +56,7 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 - `soul.md / user.md / system.md`：人格、用户画像、相处方式；只影响 Claudia 会话。
 - 可选自动提出记忆候选，人工接受后才成为确认记忆，不擅自改写画像和人格。
 - 可选 macOS 应用前台时长统计，不截图、不读应用内容。
-- 本机时间每天 05:00 生成温和的 500—800 汉字回顾。
+- 本机时间每天 05:00 生成简短、有依据的每日回顾；v0.3.3 约 300 字、最多 500 个非空白字符。
 - 本机时间每天 06:00 检查本仓库正式 Release，校验后自动安装，空闲后由启动器重启生效。
 - 设置提供数据目录、打开文件夹、打开实际 Harness 界面及后台常驻入口。
 - 新启动器关闭宿主自动弹窗，待完整启动后只打开 Claudia 一次。
@@ -54,11 +73,14 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 
 ## 安装与启动
 
-从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.1.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
+从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.3.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
 
 ```sh
-dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.1.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-email-0.11.0-claudia.2.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.3.tgz --ignore-scripts
 ```
+
+安装邮件兼容包不会自动授权 Claudia 普通聊天读取邮箱。请启动后在「设置 → 插件」中确认启用邮件 Bundle、配置 QQ 邮箱，并在每次邮件分析前查看数据共享预览。已有其它 dsh-email 版本时请先备份 Harness profile 和设置。
 
 在终端使用包内启动器（下例 home 和端口可按需调整）：
 
@@ -81,7 +103,7 @@ node "$HOME/.dsh/profiles/web/node_modules/dsh-claudia/bin/claudia.mjs" start \
 从源码或 fork 安装可固定标签，严格复现时改用完整提交号：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.1" --ignore-scripts
+dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.3" --ignore-scripts
 ```
 
 尚未发布 npm registry，不要假设按包名在线安装已可用。peerDependencies 警告可能出现，实际由宿主模块解析回退提供；不要仅因警告而另装第二份 Harness。

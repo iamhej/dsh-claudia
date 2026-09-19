@@ -293,8 +293,8 @@ test('0.2.1 SQLite 首次完整迁移，保留全部 session 副本及 runtime �
   assert.deepEqual(f.store.journal(), []);
   assert.deepEqual(f.store.memories(), []);
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM journal').get().n, 1);
-  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM record_migrations').get().n, 2);
-  assert.deepEqual(f.store.db.prepare('SELECT version FROM record_migrations ORDER BY version').all().map(row => row.version), ['markdown-v1', 'profile-defaults-v1']);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM record_migrations').get().n, 3);
+  assert.deepEqual(f.store.db.prepare('SELECT version FROM record_migrations ORDER BY version').all().map(row => row.version), ['markdown-v1', 'profile-defaults-v1', 'routine-default-v1']);
 });
 
 test('迁移保留用户业务 MD，会话冲突原文与旧业务内容另存 migration', t => {

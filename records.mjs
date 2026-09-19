@@ -4,6 +4,8 @@ import {
   fchmodSync, readSync, writeFileSync, fsyncSync, renameSync, linkSync, unlinkSync, opendirSync,
 } from 'node:fs';
 import { resolve, dirname, basename, join, parse } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { validateRoutine, DEFAULT_ROUTINE } from './routine-schema.mjs';
 
 export const MAX_RECORD_BYTES = 8 * 1024 * 1024;
 export const MAX_PROFILE_CHARS = 12000;
@@ -17,7 +19,7 @@ export const BOOLEAN_SETTINGS = ['allowContext', 'activityEnabled', 'reflectionE
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
 const DIRECTORIES = ['journal', 'reflections', 'conversations', 'migration'];
-const FIXED_FILES = ['todo.md', 'memory.md', 'soul.md', 'user.md', 'system.md', 'settings.md'];
+const FIXED_FILES = ['todo.md', 'memory.md', 'soul.md', 'user.md', 'system.md', 'settings.md', 'routines.md'];
 const hash = text => createHash('sha256').update(text).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const conflict = () => fail('Markdown 已发生变化，请重新读取 revision 后重试', 409);
@@ -165,7 +167,7 @@ function blocks(text) {
   while ((match = regex.exec(text))) {
     let meta;
     try { meta = JSON.parse(match[1]); } catch { throw fail('记录元数据不是有效 JSON'); }
-    if (!meta || !UUID.test(meta.boundary) || !UUID.test(meta.id) || !['todo', 'memory', 'candidate', 'message'].includes(meta.type)) throw fail('记录元数据无效');
+    if (!meta || !UUID.test(meta.boundary) || !UUID.test(meta.id) || !['todo', 'memory', 'candidate', 'message', 'routine'].includes(meta.type)) throw fail('记录元数据无效');
     const key = `${meta.type}:${meta.id}`;
     if (seen.has(key)) throw fail('Markdown 包含重复的记录 ID');
     seen.add(key);
@@ -214,6 +216,31 @@ function candidate(entry) {
   const { id, source, status, createdAt, decidedAt, memoryId } = entry.meta;
   if (!['pending', 'accepted', 'rejected'].includes(status)) throw fail('记忆建议状态无效');
   return { id, text: entry.text, source, status, createdAt, ...(decidedAt ? { decidedAt } : {}), ...(memoryId ? { memoryId } : {}) };
+}
+
+function routineTime(value) {
+  const match = typeof value === 'string' && /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
+  if (!match || !Number.isFinite(Date.parse(value)) || new Date(`${match[1]}T00:00:00.000Z`).toISOString().slice(0, 10) !== match[1]) throw fail('Routine 时间必须是有效的 ISO 日期时间');
+  return value;
+}
+function routineFields({ name, prompt, schedule, allowNetwork, delivery, enabled }) {
+  return { name, prompt, schedule, allowNetwork, delivery, enabled };
+}
+function routineEntries(text) {
+  const entries = blocks(text ?? '').filter(entry => entry.meta.type === 'routine');
+  if (entries.length > 100) throw fail('Routine 最多允许 100 个任务');
+  return entries.map(entry => {
+    const input = validateRoutine(routineFields({ ...entry.meta, prompt: entry.text }));
+    const { id, createdAt, updatedAt, enabledAt, version } = entry.meta;
+    if (!Number.isSafeInteger(version) || version < 1) throw fail('Routine version 必须是正整数');
+    if (input.enabled ? enabledAt === null : enabledAt !== null) throw fail('Routine enabledAt 必须与启用状态一致');
+    const job = { id: requireUUID(id), ...input, createdAt: routineTime(createdAt), updatedAt: routineTime(updatedAt), enabledAt: input.enabled ? routineTime(enabledAt) : null, version };
+    return { entry, job };
+  });
+}
+function routineBlock(job, previous = {}) {
+  const { prompt, ...metadata } = { ...previous, ...job };
+  return block({ ...metadata, type: 'routine' }, prompt);
 }
 
 export class Records {
@@ -517,6 +544,50 @@ export class Records {
       return replaceBlock(current, entry, '');
     }, expectedRevision);
     return removed;
+  }
+  routines() {
+    const { text, revision } = this.read('routines.md');
+    return { jobs: routineEntries(text).map(({ job }) => job), revision };
+  }
+  saveRoutine(input, expectedRevision, id = null, now = new Date()) {
+    if (expectedRevision === undefined) throw conflict();
+    const fields = validateRoutine(input);
+    if (id !== null) requireUUID(id);
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw fail('Routine now 必须是有效日期');
+    const time = routineTime(now.toISOString());
+    let result;
+    const saved = this.edit('routines.md', current => {
+      const entries = routineEntries(current);
+      const old = id === null ? null : entries.find(({ job }) => job.id === id);
+      if (id !== null && !old) throw fail('Routine 不存在', 404);
+      if (old && isDeepStrictEqual(routineFields(old.job), fields)) { result = old.job; return current; }
+      if (!old && entries.length >= 100) throw fail('Routine 最多允许 100 个任务');
+      if (old?.job.version === Number.MAX_SAFE_INTEGER) throw fail('Routine version 超过安全整数范围');
+      result = { id: old?.job.id ?? randomUUID(), ...fields, createdAt: old?.job.createdAt ?? time, updatedAt: time, enabledAt: fields.enabled ? time : null, version: (old?.job.version ?? 0) + 1 };
+      const replacement = routineBlock(result, old?.entry.meta);
+      return old ? replaceBlock(current, old.entry, replacement) : append(current ?? collectionHeader('routine'), replacement);
+    }, expectedRevision);
+    return { ...result, revision: saved.revision };
+  }
+  deleteRoutine(id, revision) {
+    if (revision === undefined) throw conflict();
+    requireUUID(id);
+    let removed = false;
+    this.edit('routines.md', current => {
+      const target = routineEntries(current).find(({ job }) => job.id === id);
+      if (!target) return current;
+      removed = true;
+      return replaceBlock(current, target.entry, '');
+    }, revision);
+    return removed;
+  }
+  // Store 持有 records 锁；迁移标记写入 SQLite 后，删除默认任务不会被重新填充。
+  migrateRoutines() {
+    const current = this.read('routines.md');
+    if (current.text !== null) return;
+    const fields = validateRoutine(DEFAULT_ROUTINE), time = new Date().toISOString();
+    const job = { id: randomUUID(), ...fields, createdAt: time, updatedAt: time, enabledAt: fields.enabled ? time : null, version: 1 };
+    this.write('routines.md', collectionHeader('routine') + routineBlock(job), null);
   }
   profiles() {
     return Object.fromEntries(['soul', 'user', 'system'].map(name => {
