@@ -176,7 +176,7 @@ try {
     evidence.pipeline.push({ phase: 'post', name: exec.name, id: exec.agent.session.id, isError: result.isError, valueKeys: Object.keys(result.value ?? {}) });
     return next();
   });
-  review = new EmailReview(ctx, store, account); chat = new NativeRuntime(ctx, store);
+  review = new EmailReview(ctx, store, account); chat = new NativeRuntime(ctx, store, { onUnexpectedTools: value => evidence.probes.push({ kind: 'chat-tools-suppressed', ...value }) });
   const scopedAgents = [];
   // 只观察真实 setup 参数和实际 waterfall 结果；不替换 factory、followup、assembly 或 LLM。
   for (const [kind, runtime] of [['reader', review.reader], ['analysis', review.analysis], ['chat', chat]]) {
@@ -259,6 +259,10 @@ try {
 
   phase = '普通 NativeRuntime 对话保持零工具且无原邮件';
   replyMode = 'summary';
+  const chatHandle = await chat.prepare(store.get('sessionId'));
+  const ownSend = definitions.find(tool => tool.name === 'email_send');
+  chatHandle.agent.ctx.tools.register(ownSend);
+  assert.deepEqual(ctx.tools.wireSchemas(chatHandle.agent).schemas.map(tool => tool.name), ['email_send'], '模拟宿主稍后注入的 own-scope 工具应绕过 allow:[]');
   const answer = await chat.run(store.get('sessionId'), '普通chat隔离检查');
   if (mockFailure) throw mockFailure;
   assert.equal(answer.reason.kind, 'completed'); assert.equal(answer.text, 'CHAT_ZERO_TOOLS_OK');
@@ -266,6 +270,7 @@ try {
   assert.equal(wire.at(-1).body.tools?.length ?? 0, 0);
   assert.equal(ctx.tools.get('email_send'), definitions.find(tool => tool.name === 'email_send'), '其它宿主 scope 的全局工具未被修改');
   assert.equal(ctx.tools.modeFor(undefined), 'ptc');
+  assert.deepEqual(evidence.probes,[{kind:'chat-tools-suppressed',sessionId:store.get('sessionId'),tools:'email_send'}]);
   assert.deepEqual(evidence.blockedNetwork, []); assert.ok(evidence.network.length > 0); assert.deepEqual(hashes(), sourceHashes);
   await chat.close(); await review.close(); assert.equal(ctx.agents.list().length, 0);
   outcome = { result: 'PASS', home, realAgentLoop: true, realSystemPrompt: true, realToolRuntime: true, realCompatBuildEmailTools: true, actualFlatRequestConfig: true, setupCtxIdentity: true, readerModelCalls: 0, analysisWireCalls: 2, ordinaryChatWireCalls: 1, wireTools: 0, analysisProfiles: false, resumedFailClosed: true, injectedToolBlocked: true, replayBlocked: true, mailbox: 'SYNTHETIC_POOL_ONLY', model: 'LOOPBACK_MOCK_ONLY', externalNetwork: false, versions: evidence.versions };

@@ -37,7 +37,7 @@ export async function apply(ctx,config={}) {
   ctx.inject(['web'], child => { web=child.web; child.effect(()=>()=>{web=undefined;}); });
   ctx.inject(['settings'], child => { settings=child.settings; child.effect(()=>()=>{settings=undefined;}); });
   const getPlugins=createPluginInventory({home,profile,hostAnchor:config.dshBin??process.argv[1],getEntries:()=>ctx.get('loader')?.entries()??null});
-  const app=await startServer({dataDir,port,home,profile,logger,getPlugins,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values(),...(news?.handles.values()??[]),...(emailReview?.handles.values()??[])].map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
+  const app=await startServer({dataDir,port,home,profile,logger,getPlugins,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values(),...(news?.handles.values()??[]),...(emailReview?.handles.values()??[])].filter(h=>!h.borrowed).map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store,{reuseLiveAgent:true,onUnexpectedTools:({sessionId,tools})=>logger.warn('chat.tools.suppressed',{sessionId,tools})}),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
     createServices:({store,runtime,isBusy,restartBusy,pluginPort})=>{
       const options={dataDir,home,profile,dshBin:config.dshBin??process.argv[1],nodeBin:config.nodeBin??process.execPath,hostPort:ctx.webServer.port,pluginPort,pnpmPath:config.pnpmPath};
       const activity=new ActivityTracker(dataDir,{logger});

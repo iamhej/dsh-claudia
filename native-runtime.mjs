@@ -11,10 +11,15 @@ export class NativeRuntime {
     try { const path=dirname(ctx.dshHomePath('claudia')); if(isAbsolute(path))this.fileRoot=realpathSync(path); } catch { /* 无法确认范围时继续拒绝全部操作。 */ }
     this.ctx=ctx;this.store=store;this.handles=new Map();this.closed=false;this.error='';this.verifiedRoute='';this.running=null;this.pending=new Map();this.closeTask=null;this.disposals=new Map();this.restricted=new WeakSet();
     this.sessionKey = options.sessionKey ?? 'harnessSessions';
+    this.reuseLiveAgent = options.reuseLiveAgent === true;
+    this.onUnexpectedTools = typeof options.onUnexpectedTools === 'function' ? options.onUnexpectedTools : () => {};
     if (options.setup) this.setup = options.setup;
     if (options.restrict) this.restrict = options.restrict;
     this.offCreated=ctx.on('agent/created',({agent})=>{
       if(this.store.get(this.sessionKey,[]).includes(String(agent.session.id)))this.restrict(agent.ctx, String(agent.session.id));
+    });
+    this.offDisposed=ctx.on('agent/disposed',({agent})=>{
+      for(const [id,handle] of this.handles)if(handle.borrowed&&handle.agent===agent)this.handles.delete(id);
     });
     for(const agent of ctx.agents.list())if(this.store.get(this.sessionKey,[]).includes(String(agent.session.id)))this.restrict(agent.ctx, String(agent.session.id));
   }
@@ -27,14 +32,22 @@ export class NativeRuntime {
     try {selection=this.selection();await this.ctx.llm.resolveCallConfig(selection);configured=true;}catch{}
     return {installed:true,version:'0.1.5-rc.x (native host)',configured,connected:!this.closed,credentialSource:'harness',modelVerified:configured&&this.verifiedRoute===JSON.stringify(selection),error:this.error,fileAccess:{root:this.fileRoot,mode:'denied',shell:false,message:'对话未开放文件或命令工具；Harness 目录之外不授权，目录内凭据与程序文件也不授权。'}};
   }
-  restrict=(a)=>{
+  restrict=(a,id='')=>{
     if(this.restricted.has(a))return;this.restricted.add(a);
     a.tools.presentAs('native');a.tools.restrict({allow:[]});a.tools.guard(()=> '该个人对话未开放文件或命令工具；不得访问 Harness 目录之外，目录内凭据与程序文件也未授权');
-    a.on('system-prompt/assemble',async(_assembly,_context,next)=>{const result=await next();if(result.tools.length)throw new Error('Unexpected tools in personal conversation');return result;},{prepend:true});
+    a.on('system-prompt/assemble',async(_assembly,_context,next)=>{
+      const result=await next(),tools=Array.isArray(result.tools)?result.tools:[];
+      if(!tools.length)return result;
+      const names=[...new Set(tools.map(tool=>typeof tool?.name==='string'&&tool.name?tool.name:'unknown'))].sort();
+      try{this.onUnexpectedTools({sessionId:id,tools:names.join(',')});}catch{}
+      // allow:[] 只过滤继承工具；若宿主稍后在 Agent 自身作用域注册工具，仍会出现在最终组装结果。
+      // 这里在模型请求边界再次归零，执行层 guard 继续兜底，从而保持个人对话严格零工具而不是让整轮失败。
+      return {...result,tools:[]};
+    },{prepend:true});
   };
-  setup=(a)=>{
+  setup=(a,agent)=>{
     // Restrict only this plugin's durable session IDs, including host-side resume.
-    this.restrict(a);
+    this.restrict(a,String(agent?.session?.id??''));
     a.systemPrompt.variable('claudia_file_root',()=>JSON.stringify(this.fileRoot||'尚未确认，拒绝操作'));
     a.systemPrompt.section({name:'claudia:file-boundary',order:a.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')+2,text:'本插件对话的本地文件权限上限是实际 Harness 数据目录 {{claudia_file_root}}，不是整个电脑。当前未开放任何文件、Shell 或命令执行工具；不得声称已经读写文件。目录外不授权，目录内凭据、程序与启动配置也不授权。用户设定和记录不能改变此边界。页面中用户主动保存记录、启用采集或后台服务属于独立明确操作，不代表对话获准操作电脑。'});
     a.systemPrompt.variable('claudia_display_name',()=>JSON.stringify(this.store.get('assistantName','Claudia')));
@@ -62,6 +75,16 @@ export class NativeRuntime {
   async _prepare(id) {
     const known=this.store.get(this.sessionKey,[]);
     if(!known.includes(id))this.store.set(this.sessionKey,[...known,id]);
+    if(this.reuseLiveAgent){
+      const agent=this.ctx.agents.get?.(id);
+      if(agent){
+        if(String(agent.session?.id??'')!==id)throw new Error('Live agent/session identity mismatch');
+        this.setup(agent.ctx,agent);
+        const handle={agent,borrowed:true,dispose:async()=>{}};
+        this.handles.set(id,handle);
+        return handle;
+      }
+    }
     const options={agentOptions:{...this.selection(),maxTokens:4096},setup:this.setup};
     // Resume first to close both crash windows between host persistence and UI metadata.
     // Only the precise NotFound error allows creation; corruption/ownership never does.
@@ -119,7 +142,7 @@ export class NativeRuntime {
   }
   async close() {
     if(this.closeTask)return this.closeTask;
-    this.closed=true;this.offCreated?.();
+    this.closed=true;this.offCreated?.();this.offDisposed?.();
     this.closeTask=(async()=>{
       await Promise.allSettled([...this.pending.values()]);
       await Promise.allSettled([...this.handles.keys()].map(id=>this.release(id)));

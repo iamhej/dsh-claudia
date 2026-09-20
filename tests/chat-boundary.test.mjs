@@ -13,26 +13,37 @@ const modules = {
 const hook=registerHooks({resolve(specifier,context,next){return modules[specifier]?{url:'data:text/javascript,'+encodeURIComponent(modules[specifier]),shortCircuit:true}:next(specifier,context)}});
 const { NativeRuntime } = await import('../native-runtime.mjs');
 hook.deregister();
-function fixture(t, pathService=true) {
+function fixture(t, pathService=true, options={}) {
  const home=mkdtempSync(join(tmpdir(),'claudia-chat-scope-'));t.after(()=>rmSync(home,{recursive:true,force:true}));
  const events={},known=[];
  const ctx={on:(name,fn)=>{events[name]=fn;return ()=>{}},agents:{list:()=>[]},agentDefaultModel:{currentSelection:()=>({provider:'mock',model:'mock'})},llm:{resolveCallConfig:async()=>({})}};
  if(pathService)ctx.dshHomePath=name=>join(home,name);
- const runtime=new NativeRuntime(ctx,{get:()=>known,set:(_,v)=>known.splice(0,known.length,...v),messages:()=>[]});
+ const runtime=new NativeRuntime(ctx,{get:()=>known,set:(_,v)=>known.splice(0,known.length,...v),messages:()=>[]},options);
  return {runtime,ctx,home,events,known};
 }
 function target(){const hooks={};const value={allow:null,guard:null,hook:null,count:0};return {value,ctx:{tools:{presentAs:()=>{},restrict:rule=>{value.allow=rule.allow;value.count++},guard:fn=>{value.guard=fn}},on:(name,fn)=>{hooks[name]=fn;value.hook=fn}}};}
 test('对话范围来自真实宿主路径，不是启动cwd；状态不授予文件或Shell能力',async t=>{
  const {runtime,home}=fixture(t);const status=await runtime.status();assert.equal(status.fileAccess.root,realpathSync(home));assert.equal(status.fileAccess.mode,'denied');assert.equal(status.fileAccess.shell,false);assert.notEqual(status.fileAccess.root,process.cwd());
 });
-test('执行层拒绝所有对话工具，包括目录外、凭据和命令请求',async t=>{
- const {runtime}=fixture(t);const agent=target();runtime.restrict(agent.ctx);assert.deepEqual(agent.value.allow,[]);
+test('执行层拒绝所有对话工具，最终组装也会移除稍后注册的 own-scope 工具',async t=>{
+ const diagnostics=[];
+ const {runtime}=fixture(t,true,{onUnexpectedTools:value=>diagnostics.push(value)});const agent=target();runtime.restrict(agent.ctx,'owned');assert.deepEqual(agent.value.allow,[]);
  for(const call of [{name:'read',path:'../../Desktop/private.txt'},{name:'read',path:'.credentials.yaml'},{name:'shell',command:'pwd'},{name:'write',path:'claudia/note.md'}])assert.equal(typeof agent.value.guard(call),'string');
- await assert.rejects(agent.value.hook({}, {}, async()=>({tools:[{name:'shell'}]})),/Unexpected tools/);
- assert.deepEqual(await agent.value.hook({}, {}, async()=>({tools:[]})),{tools:[]});
+ const assembled={tools:[{name:'shell'},{name:'email_send'},{name:'shell'}],sections:['keep']};
+ assert.deepEqual(await agent.value.hook({}, {}, async()=>assembled),{tools:[],sections:['keep']});
+ assert.deepEqual(assembled.tools.map(tool=>tool.name),['shell','email_send','shell']);
+ assert.deepEqual(diagnostics,[{sessionId:'owned',tools:'email_send,shell'}]);
+ assert.deepEqual(await agent.value.hook({}, {}, async()=>({tools:[],sections:['keep']})),{tools:[],sections:['keep']});
+ assert.equal(diagnostics.length,1);
 });
 test('从宿主恢复已登记会话时再次限制工具，不影响其他会话',t=>{
  const {runtime,events,known}=fixture(t);known.push('owned');const own=target(),other=target();events['agent/created']({agent:{session:{id:'owned'},ctx:own.ctx}});events['agent/created']({agent:{session:{id:'other'},ctx:other.ctx}});assert.deepEqual(own.value.allow,[]);assert.equal(other.value.allow,null);runtime.restrict(own.ctx);assert.equal(own.value.count,1);
+});
+test('普通 Claudia 显式复用宿主已打开的自有会话，不重复 resume 或取得其处置权',async t=>{
+ const setup=[];const {runtime,ctx,known,events}=fixture(t,true,{reuseLiveAgent:true,setup:(a,agent)=>setup.push({a,agent})});known.push('owned');
+ const agent={session:{id:'owned'},ctx:{}};let resumed=0;ctx.agents.get=id=>id==='owned'?agent:undefined;ctx.agents.resume=async()=>{resumed++;throw Error('不应重复 resume')};
+ const handle=await runtime.prepare('owned');assert.equal(handle.agent,agent);assert.equal(handle.borrowed,true);assert.equal(resumed,0);assert.deepEqual(setup,[{a:agent.ctx,agent}]);
+ events['agent/disposed']({agent});assert.equal(runtime.handles.has('owned'),false);await handle.dispose();
 });
 test('新会话cwd绑定宿主目录',async t=>{
  const {runtime,ctx,home}=fixture(t);let options;ctx.agents.resume=async()=>{const e=Error('not found');e.name='SessionPersistenceNotFoundError';throw e};ctx.agents.create=async o=>{options=o;return {dispose:async()=>{}}};await runtime.prepare('new');assert.equal(options.meta.cwd,realpathSync(home));
