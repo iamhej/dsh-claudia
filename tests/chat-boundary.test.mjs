@@ -51,3 +51,25 @@ test('新会话cwd绑定宿主目录',async t=>{
 test('无法确定宿主目录时保持拒绝，且不以cwd降级创建会话',async t=>{
  const {runtime,ctx}=fixture(t,false);let created=false;ctx.agents.resume=async()=>{const e=Error('not found');e.name='SessionPersistenceNotFoundError';throw e};ctx.agents.create=async()=>{created=true};await assert.rejects(runtime.prepare('new'),/无法确认 Harness/);assert.equal(created,false);assert.equal((await runtime.status()).fileAccess.mode,'denied');
 });
+function storeFixture(t,values,agents=[]){
+ const home=mkdtempSync(join(tmpdir(),'claudia-session-prune-'));t.after(()=>rmSync(home,{recursive:true,force:true}));
+ const store={get:(key,fallback)=>values.has(key)?values.get(key):fallback,set:(key,value)=>values.set(key,value),messages:()=>[],db:{prepare:()=>({all:()=>[...values.get('recorded')??[]].map(sessionId=>({sessionId}))})}};
+ const ctx={on:()=>()=>{},agents:{list:()=>agents},agentDefaultModel:{currentSelection:()=>({provider:'mock',model:'mock'})},llm:{resolveCallConfig:async()=>({})},dshHomePath:name=>join(home,name)};
+ return new NativeRuntime(ctx,store,{});
+}
+test('释放一次性会话即从清单摘除，主会话始终保留',async t=>{
+ const values=new Map([['sessionId','main'],['harnessSessions',['main','temp']]]);
+ const runtime=storeFixture(t,values);
+ runtime.handles.set('temp',{agent:{},borrowed:false,dispose:async()=>{}});
+ runtime.handles.set('main',{agent:{},borrowed:false,dispose:async()=>{}});
+ await runtime.release('temp');assert.deepEqual(values.get('harnessSessions'),['main']);
+ await runtime.release('main');assert.deepEqual(values.get('harnessSessions'),['main']);
+});
+test('启动清理只摘除一次性会话，主会话、有本地消息和仍存活的会话保留',t=>{
+ const values=new Map([['sessionId','main'],['harnessSessions',['main','old-main','temp-1','temp-2','live-temp']],['recorded',['main','old-main']]]);
+ const live=target();
+ const runtime=storeFixture(t,values,[{session:{id:'live-temp'},ctx:live.ctx}]);
+ assert.equal(runtime.pruneSessions(),2);
+ assert.deepEqual(values.get('harnessSessions'),['main','old-main','live-temp']);
+ assert.equal(runtime.pruneSessions(),0);
+});

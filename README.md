@@ -1,12 +1,24 @@
 # dsh-claudia
 
-> **v0.3.5：每日资讯与「Claudia 的观察」改为时间流里的卡片，会被新对话自然刷上去。** 每日回顾默认纳入对话摘录，篇幅不再硬性限字。
+> **v0.3.6：修掉“宿主一直忙”导致一键重启和邮件开关被永久卡住的问题，并清理更新与会话留下的本地残留。** 每日资讯与「Claudia 的观察」仍是时间流里的卡片，每日回顾默认纳入对话摘录，篇幅不硬性限字。
 
 **让个人 AI 助手不止是一个聊天框。**
 
 DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、Routine 和记忆。能力及插件管理入口位于设置。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
 
-版本 **0.3.5**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+版本 **0.3.6**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+
+## 0.3.6 更新
+
+- 修复“宿主一直忙”：复用宿主 live agent 的会话被误判成别人的会话，导致 `busy` 恒为真，一键重启、准备重启和邮件开关永远返回 409。现在借用的会话也算自有，并在仍有其他会话时按低频记录占用方，便于定位。
+- 更新不再堆积磁盘：启动时清理 `.updates`，只删**没有任何人引用**的已校验包与本插件自己的过期下载包，并只保留最近 3 份回滚备份；有更新等待重启确认或安装进行中时一律不清理。`.updates` 是所有插件共用的暂存目录，profile 的 `package.json` / `pnpm-lock.yaml` 会用 `file:` 直接指向里面的包，被指向的一项绝不能删（删了之后该 profile 里任何后续安装都会失败），所以安装成功后也不再删本次的包。
+- 一次性会话（回顾、记忆候选、资讯、邮件分析）用完即从持久会话清单摘除，启动还会再清一遍既非主会话、又没有本地消息、也没有存活宿主 agent 的残留 ID；主会话始终保留，不削弱“模型历史缺失就拒绝静默重建”和重启后重新施加零工具限制的保护。
+- 邮件分析失败现在区分原因：本模块登记的受控错误（如“邮箱、模型设置或日期范围已变化，请重新预览”）会原样告知；未登记的宿主或邮箱异常仍只给通用文案，不回显原始错误、路径或凭据。
+- 回顾硬兜底从 2000 放宽到 3000 个非空白 Unicode 字符（达到即整篇不保存、不截断），篇幅仍由提示词软约束。
+- 回顾真分页：状态接口只回最近 14 条并给出总数与是否还有更早的条目，Journal 回顾视图点“再显示 7 条”时才按需请求更早一页，本地已载入的条目不会被状态刷新冲掉。
+- 消息已写入 SQLite 但 Markdown 副本同步失败时不再报成模型调用失败：回复照常交付并提示“已保存，重启后会重建，请不要重复发送”，也不把已保存的回复标成 error。
+- 几处文案更实：保存人格后会说明“无需重启，从下一轮对话开始生效”；LaunchAgent 注册/停用失败会附上脱敏的命令输出片段；Routine 没有下次运行时间时优先显示被什么挡住。
+- 补充 supervisor CLI 与回顾分页的隔离测试。
 
 ## 0.3.5 更新
 
@@ -14,7 +26,7 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 - 时间流卡片是**纯前端渲染的独立事件**，不写入 `messages`，也不进入模型历史：既不会被下一期资讯当作本地依据自我引用，也不会混进每日回顾的材料。
 - 每日回顾改为「<名字> 的观察」卡片进入同一条时间流；Today 面板不再重复显示摘要，回顾的唯一归档入口仍是 Journal 的「回顾」视图。
 - 回顾提示词重写：以 soul 设定的人格写日志式回顾，分「这一天是怎么过的」和「你可能没注意到」两部分，只写值得记录和回顾的事。**明令禁止把没有必然联系的事实硬拼成洞察**（例如不能因为某个应用前台时间长就推断用户在做什么，也不能因为 Journal 没提到就认为反常）。
-- 回顾材料默认包含 Journal、待办与**对话摘录**，应用前台时长仍取决于是否开启采集。字数上限从 500 放宽到 2000，只作失控兜底；篇幅由提示词软约束，宁短勿长、不凑字数。完全没有记录时也会照实简短说明，而不是空着或编造。
+- 回顾材料默认包含 Journal、待办与**对话摘录**，应用前台时长仍取决于是否开启采集。字数上限是 **3000 个非空白 Unicode 字符的硬兜底**（达到即整篇不保存、不截断）；篇幅由提示词软约束，宁短勿长、不凑字数。完全没有记录时也会照实简短说明，而不是空着或编造。
 
 ## 0.3.4 更新
 
@@ -88,11 +100,11 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 
 ## 安装与启动
 
-从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.5.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
+从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.6.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
 
 ```sh
 dsh plugin --profile web add /absolute/path/to/dsh-email-0.11.0-claudia.2.tgz --ignore-scripts
-dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.5.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.6.tgz --ignore-scripts
 ```
 
 安装邮件兼容包不会自动授权 Claudia 普通聊天读取邮箱。请启动后在「设置 → 插件」中确认启用邮件 Bundle、配置 QQ 邮箱，并在每次邮件分析前查看数据共享预览。已有其它 dsh-email 版本时请先备份 Harness profile 和设置。
@@ -118,7 +130,7 @@ node "$HOME/.dsh/profiles/web/node_modules/dsh-claudia/bin/claudia.mjs" start \
 从源码或 fork 安装可固定标签，严格复现时改用完整提交号：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.5" --ignore-scripts
+dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.6" --ignore-scripts
 ```
 
 尚未发布 npm registry，不要假设按包名在线安装已可用。peerDependencies 警告可能出现，实际由宿主模块解析回退提供；不要仅因警告而另装第二份 Harness。

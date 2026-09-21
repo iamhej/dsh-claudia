@@ -1,16 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
-import { BackgroundService, createInstaller, homeHash, installedPackage, resolveDsh, resolveExecutable, rollbackInstall, satisfies, toolEnvironment, validateArchive } from '../lifecycle.mjs';
+import { BackgroundService, createInstaller, homeHash, installedPackage, pruneUpdates, resolveDsh, resolveExecutable, rollbackInstall, satisfies, toolEnvironment, validateArchive } from '../lifecycle.mjs';
 import { CHILD_BOOT, makeHostArgs, parseArgs, runSupervisor } from '../bin/claudia.mjs';
 
 const exec = promisify(execFile), root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -217,6 +217,56 @@ test('安装成功：官方 argv、精确 pnpm、完整无密钥备份和 pendin
   assert.equal(existsSync(join(f.dataDir, '.runtime', 'restart-result.json')), false);
   assert.equal(installedPackage(f.home).manifest.version, '0.3.0'); assert.equal(events(f.home).some(e => e.type === 'start'), false);
   assert.equal(existsSync(join(f.dataDir, '.updates', 'install.lock')), false);
+  // 安装成功后不能把本次的包删掉：profile 的 package.json / lock 会用 file: 指向它，
+  // 删了之后后续任何 pnpm add 都会 ENOENT。只保留备份供回滚，旧包交给 pruneUpdates 按引用清理。
+  assert.equal(existsSync(f.update.path), true);
+  assert.equal(existsSync(join(result.backupDir, 'complete.json')), true);
+});
+
+test('清理 .updates 残留：只删没人引用的已校验包、过期下载和超出保留数的备份', async t => {
+  const f = fixture(t), updates = join(f.dataDir, '.updates');
+  const opts = () => ({ dataDir: f.dataDir, home: f.home, profile: 'web' });
+  const verified = join(updates, `verified-0.3.0-${randomUUID()}.tgz`); write(verified, 'x');
+  const fresh = join(updates, `dsh-claudia-0.3.0-${randomUUID()}.tgz`); write(fresh, 'x');
+  const stale = join(updates, `dsh-claudia-0.2.9-${randomUUID()}.tgz`); write(stale, 'x');
+  const past = new Date(Date.now() - 8 * 86400000); utimesSync(stale, past, past);
+  // .updates 是所有插件共用的暂存目录：profile 用 file: 指向的包（可能是别的插件装进来的）
+  // 绝不能删，删掉之后本 profile 里任何后续 pnpm add 都会 ENOENT 失败。
+  const pinnedName = `verified-other-plugin-1.0.0-${randomUUID()}.tgz`, pinned = join(updates, pinnedName);
+  write(pinned, 'x');
+  const pinnedStaleName = `dsh-claudia-0.2.5-${randomUUID()}.tgz`, pinnedStale = join(updates, pinnedStaleName);
+  write(pinnedStale, 'x');
+  const ancient = new Date(Date.now() - 60 * 86400000); utimesSync(pinnedStale, ancient, ancient);
+  write(join(f.profile, 'package.json'), { name: 'test-profile', dependencies: { 'other-plugin': `file:${pinned}`, 'dsh-claudia': `file:${pinnedStale}` } });
+  write(join(f.profile, 'pnpm-lock.yaml'), `dependencies:\n  other-plugin:\n    specifier: file:${pinned}\n`);
+  const keep = join(updates, 'not-a-package.txt'); write(keep, 'USER_DATA_UNCHANGED');
+  const outside = join(f.dir, 'outside-target'); write(outside, 'USER_DATA_UNCHANGED');
+  const linked = join(updates, `verified-0.2.8-${randomUUID()}.tgz`); symlinkSync(outside, linked);
+  const backups = join(updates, 'backups'), names = []; mkdirSync(backups);
+  for (let i = 0; i < 5; i++) {
+    const name = `0.2.${i}-${randomUUID()}`, dir = join(backups, name); mkdirSync(dir);
+    const when = new Date(Date.now() - i * 1000); utimesSync(dir, when, when); names.push(name);
+  }
+  mkdirSync(join(backups, 'not-a-backup'));
+  const result = pruneUpdates(opts());
+  assert.equal(result.skipped, false); assert.equal(result.keptBackups, 3);
+  assert.equal(existsSync(verified), false); assert.equal(existsSync(stale), false);
+  assert.equal(existsSync(pinned), true, '被 package.json 引用：必须留下');
+  assert.equal(existsSync(pinnedStale), true, '过期但被引用：也必须留下');
+  assert.equal(existsSync(fresh), true); assert.equal(existsSync(keep), true);
+  assert.equal(existsSync(linked), true); assert.equal(readFileSync(outside, 'utf8'), 'USER_DATA_UNCHANGED');
+  assert.equal(existsSync(join(backups, 'not-a-backup')), true);
+  const left = readdirSync(backups).filter(name => name !== 'not-a-backup').sort();
+  assert.deepEqual(left, names.slice(0, 3).sort());
+  // 有更新等待重启确认或安装进行中时一律不清理：回滚现场必须完整。
+  const request = join(f.dataDir, '.runtime', 'restart-request.json');
+  write(request, { version: '0.3.0', verifiedVersion: '0.3.0', oldVersion: '0.2.1', backupDir: join(backups, names[0]), phase: 'pending', id: randomUUID() });
+  assert.equal(pruneUpdates(opts()).skipped, true);
+  rmSync(request); write(join(updates, 'install.lock'), '{}');
+  assert.equal(pruneUpdates(opts()).skipped, true);
+  rmSync(join(updates, 'install.lock'));
+  assert.equal(pruneUpdates(opts()).removed, 0);
+  assert.equal(pruneUpdates({ ...opts(), dataDir: join(f.dir, 'absent') }).removed, 0);
 });
 
 test('失败及虚假成功都恢复 profile 和本插件，不删其他插件或用户数据', async t => {
@@ -653,8 +703,13 @@ test('launchctl 失败不报告成功；非 macOS 明确不支持', async t => {
   const f = fixture(t);
   const unavailable = new BackgroundService(f.options, { platform: 'linux', userHome: join(f.dir, 'user'), query() { assert.fail('不应调用'); } });
   assert.equal(unavailable.status().supported, false); await assert.rejects(unavailable.setEnabled(true), /仅支持 macOS/);
-  const service = new BackgroundService(f.options, { platform: 'darwin', userHome: join(f.dir, 'user'), query: () => ({ status: 113, stderr: 'Could not find service' }), run: async () => { throw new Error('模拟失败'); } });
-  await assert.rejects(service.setEnabled(true), /注册失败/); assert.equal(service.status().enabled, false);
+  const service = new BackgroundService(f.options, { platform: 'darwin', userHome: join(f.dir, 'user'), query: () => ({ status: 113, stderr: 'Could not find service' }), run: async () => { const error = new Error('模拟失败'); error.stderr = 'Bootstrap failed: 125: Domain does not exist token=sk-abcdefghijklmnop'; throw error; } });
+  await assert.rejects(service.setEnabled(true), error => {
+    // 失败要带上可排查的输出片段，同时抹掉任何凭据样式的字符串。
+    assert.match(error.message, /注册失败/); assert.match(error.message, /Domain does not exist/);
+    assert.doesNotMatch(error.message, /sk-abcdefghijklmnop/); return true;
+  });
+  assert.equal(service.status().enabled, false);
   // 注册失败必须当场清除刚写入的 plist：launchctl 不认识它，status 照样报关闭，
   // 但 RunAtLoad 会在下次登录把后台悄悄拉起来，违反“不偷偷注册”的约定。
   assert.equal(existsSync(service.plist), false);

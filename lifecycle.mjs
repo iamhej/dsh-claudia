@@ -1,4 +1,4 @@
-import { constants, accessSync, closeSync, cpSync, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { constants, accessSync, closeSync, cpSync, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -6,7 +6,7 @@ import { gunzipSync } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { noopLogger } from './logger.mjs';
+import { noopLogger, redact } from './logger.mjs';
 
 const exec = promisify(execFile);
 const MAX = 64 * 1024 * 1024;
@@ -322,6 +322,92 @@ export function rollbackInstall({ dataDir, home = defaultHome(), profile = 'web'
   return { rollbackComplete: true, installationUncertain: false, oldVersion, backupDir };
 }
 
+// .updates 只应存放“本次安装正在用”的东西：已校验临时包、待装下载包、回滚备份。
+// 安装完成或启动后这些文件就失去用途，长期运行会静默堆积几十 MB。
+// 清理一律按“目录内直接子项 + 名称严格匹配 + 非符号链接”进行，绝不按前缀模糊匹配，
+// 也绝不触碰 install.lock、backups 之外的内容和用户数据。
+// launchctl 失败时只附上一小段纯文本输出片段，方便排查“为什么注册不上”；
+// 不回显整个 plist、完整路径或任何凭据样式的内容。
+function commandDetail(error, limit = 160) {
+  const text = [error?.stderr, error?.stdout, error?.message].filter(value => typeof value === 'string' && value.trim()).join(' ');
+  if (!text) return '';
+  const flat = redact(text).replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return `（命令输出片段：${flat.slice(-limit)}）`;
+}
+
+const KEEP_BACKUPS = 3;
+const DOWNLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const UUID_TAIL = /^[0-9A-Za-z.+_-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VERIFIED_NAME = /^verified-[0-9A-Za-z.+_-]{1,128}\.tgz$/;
+const DOWNLOAD_NAME = /^dsh-claudia-[0-9A-Za-z.+_-]{1,128}\.tgz$/;
+// profile 的 package.json / pnpm-lock.yaml 会用 file: 直接指向 .updates 里的某个 tgz。
+// 这一份“还被引用”的清单必须在删任何东西之前算出来：.updates 是所有插件共用的暂存目录，
+// 里面有 dsh-email、搜索插件等别人装进来的包，按名字一概而论地删会把它们的依赖一起删掉。
+function referencedUpdateBasenames(home, profile) {
+  const names = new Set();
+  const dir = join(absolutePath(home), 'profiles', profileName(profile));
+  const add = value => {
+    if (typeof value !== 'string' || !value.startsWith('file:')) return;
+    const target = value.slice(5).split('?')[0];
+    const name = basename(isAbsolute(target) ? target : join(dir, target));
+    if (name.endsWith('.tgz')) names.add(name);
+  };
+  let text = '';
+  try { text = readFileSync(join(dir, 'package.json'), 'utf8'); } catch { text = ''; }
+  if (text) { try { for (const value of Object.values(JSON.parse(text)?.dependencies ?? {})) add(value); } catch { /* 解析失败就只按文本兜底 */ } }
+  try { text = readFileSync(join(dir, 'pnpm-lock.yaml'), 'utf8'); } catch { text = ''; }
+  for (const match of text.matchAll(/file:(\S*\.updates\/\S*?\.tgz)/g)) add(`file:${match[1]}`);
+  return names;
+}
+function directEntry(dir, name) {
+  if (!name || name.includes('/') || name.includes(sep) || basename(join(dir, name)) !== name) return null;
+  const target = join(dir, name);
+  try { safePath(target); const stat = lstatSync(target); return stat.isSymbolicLink() ? null : { target, stat }; }
+  catch { return null; }
+}
+export function pruneUpdates({ dataDir, home = defaultHome(), profile = 'web', keep = KEEP_BACKUPS, logger = noopLogger, now = Date.now() } = {}) {
+  const root = join(absolutePath(dataDir), '.updates');
+  let removed = 0, keptBackups = 0, skipped = false;
+  // .updates 必须是真实目录：被替换成符号链接时宁可不清理，也不跟随到别处删文件。
+  let stat;
+  try { stat = lstatSync(root); } catch { return { removed, keptBackups, skipped }; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return { removed, keptBackups, skipped };
+  // 安装进行中或有更新等待重启确认时一律不清理：回滚现场必须完整。
+  if (existsSync(join(root, 'install.lock')) || existsSync(join(dirname(root), '.runtime', 'restart-request.json'))) return { removed, keptBackups: 0, skipped: true };
+  const pinned = referencedUpdateBasenames(home, profile);
+  // 已校验包只在“没有任何人引用”时才清：删掉被引用的一项，之后所有 pnpm add 都会失败。
+  for (const name of readdirSync(root)) {
+    if (!VERIFIED_NAME.test(name) || pinned.has(name)) continue;
+    const entry = directEntry(root, name);
+    if (!entry || !entry.stat.isFile()) continue;
+    try { unlinkSync(entry.target); removed++; } catch { /* 单个残留清理失败不影响其余 */ }
+  }
+  // 下载包只清理本插件自己的、明显过期（超过 7 天）且没被引用的，
+  // 避免误删正在下载、刚下载待装、或其他插件仍在用的文件。
+  for (const name of readdirSync(root)) {
+    if (!DOWNLOAD_NAME.test(name) || pinned.has(name)) continue;
+    const entry = directEntry(root, name);
+    if (!entry || !entry.stat.isFile() || now - entry.stat.mtimeMs < DOWNLOAD_MAX_AGE_MS) continue;
+    try { unlinkSync(entry.target); removed++; } catch { /* 同上 */ }
+  }
+  const backups = join(root, 'backups');
+  if (!existsSync(backups)) return { removed, keptBackups, skipped };
+  const entries = [];
+  for (const name of readdirSync(backups)) {
+    if (!UUID_TAIL.test(name)) continue;
+    const entry = directEntry(backups, name);
+    if (entry && entry.stat.isDirectory()) entries.push(entry);
+  }
+  entries.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  for (const entry of entries.slice(Math.max(0, keep))) {
+    try { rmSync(entry.target, { recursive: true, force: false }); removed++; } catch { /* 删除失败保留，不谎报 */ }
+  }
+  keptBackups = Math.min(entries.length, Math.max(0, keep));
+  if (removed) logger.info('update.prune', { removed, keptBackups });
+  return { removed, keptBackups, skipped };
+}
+
 export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, profile = 'web', pnpmPath, home = defaultHome(), logger = noopLogger }) {
   // 构造不创建目录、不探测进程、更不会安装；仅调用回调才产生副作用。
   dataDir = absolutePath(dataDir); home = absolutePath(home); profile = profileName(profile);
@@ -388,6 +474,9 @@ export function createInstaller({ dataDir, dshBin, nodeBin = process.execPath, p
       }
       writePrivate(restartPath, JSON.stringify({ version, verifiedVersion: version, oldVersion: old.manifest.version, backupDir: backup, phase: 'pending', id: randomUUID(), requestedAt: new Date().toISOString() }));
       logger.info('update.install.pendingRestart', { version, oldVersion: old.manifest.version });
+      // 不在这里删 verified / 原始包：profile 的 package.json 与 pnpm-lock.yaml 会用 file:
+      // 直接指向它们，删掉之后任何后续 pnpm add 都会 ENOENT。改由启动时 pruneUpdates 只清
+      // “没人引用”的旧包，失败路径也保留现场供宿主核验。
       return { state: 'pending-restart', installed: true, applied: false, pendingRestart: true, version, verifiedVersion: version, oldVersion: old.manifest.version, backupDir: backup };
     } catch (error) {
       // 区分“未开始写入”“已完整回滚”“状态不确定”三种失败，日志里也要能分辨。
@@ -455,12 +544,12 @@ export class BackgroundService {
         privateDirectory(dirname(this.plist));
         writePrivate(this.plist, `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>Label</key><string>${xml(this.label)}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>AbandonProcessGroup</key><true/><key>ExitTimeOut</key><integer>30</integer><key>WorkingDirectory</key><string>${xml(o.home)}</string><key>EnvironmentVariables</key><dict><key>DSH_HOME</key><string>${xml(o.home)}</string><key>PATH</key><string>${xml([dirname(node), ...(pnpm ? [dirname(pnpm)] : []), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin'].join(delimiter))}</string></dict></dict></plist>\n`);
         try { await this.run(['bootstrap', this.domain, this.plist]); }
-        catch { this.removePlist(); fail('LaunchAgent 注册失败；已清除刚写入的配置，不留下会在下次登录自启的残留'); }
+        catch (error) { const detail = commandDetail(error); this.removePlist(); fail(`LaunchAgent 注册失败${detail}；已清除刚写入的配置，不留下会在下次登录自启的残留`); }
       } else {
         // 不发信号给健康检查返回的 PID；前台宿主不是该 label 的子进程。
         if (before.enabled) {
           try { await this.run(['bootout', `${this.domain}/${this.label}`]); }
-          catch { fail('LaunchAgent 停用失败；未报告停用成功'); }
+          catch (error) { fail(`LaunchAgent 停用失败${commandDetail(error)}；未报告停用成功`); }
         }
         safePath(this.plist, { missing: true });
         if (existsSync(this.plist)) unlinkSync(this.plist);

@@ -17,7 +17,9 @@
     background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
     restart: { supported: false, pending: false, state: 'idle' }, busy: false,
     logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' }, logLines: [], logsLoaded: false,
-    routines: null, routineRuns: [], routineCapability: { network: false, verified: false, message: '正在读取 Routine 联网能力…' }
+    routines: null, routineRuns: [], routineCapability: { network: false, verified: false, message: '正在读取 Routine 联网能力…' },
+    // 状态接口只回最近一页回顾；更早的按需分页取，两者合并后按时间倒序显示。
+    reflectionTotal: 0, reflectionHasMore: false
   };
   const pending = new Set();
   const profileDrafts = new Map();
@@ -25,6 +27,9 @@
   const reflectionCards = new Map();
   let reflectionVisibleCount = 7;
   let reflectionReceipt = null;
+  let reflectionPage = [];
+  let reflectionExtra = [];
+  let reflectionLoading = false;
   let emailSnapshot = null;
   let emailReading = false;
   let emailError = '';
@@ -319,7 +324,10 @@
     };
     applyRoutineState(payload);
     state.todos = entriesFrom(payload.todos, 'todos');
-    state.reflections = entriesFrom(payload.reflections, 'reflections');
+    reflectionPage = entriesFrom(payload.reflections, 'reflections');
+    state.reflectionTotal = Number.isFinite(payload.reflectionTotal) ? payload.reflectionTotal : reflectionPage.length;
+    state.reflectionHasMore = payload.reflectionHasMore === true;
+    syncReflections();
     state.memoryCandidates = entriesFrom(payload.memoryCandidates, 'memoryCandidates');
     for (const [id, draft] of reflectionDrafts) syncDraft(draft, state.reflections.find((entry) => entry.id === id));
     state.dataDirectory = asText(payload.dataDirectory);
@@ -1043,7 +1051,8 @@
       if (view.signature !== signature) {
         view.title.textContent = asText(job.name);
         view.schedule.textContent = `${routineScheduleLabel(job.schedule)} · ${job.delivery === 'both' ? 'Today + 对话独立事件' : 'Today'} · ${job.allowNetwork ? '独立联网' : '本地摘要'}`;
-        view.next.textContent = `下次：${!job.enabled ? '已停用，不定时执行' : routineNetworkBlocked(job) ? routineBlockedReason(job) : job.nextRun ? dateLabel(job.nextRun, true) : '等待宿主安排'}`;
+        // nextRun 为空时优先说明被什么挡住，而不是笼统的“等待宿主安排”。
+    view.next.textContent = `下次：${!job.enabled ? '已停用，不定时执行' : job.nextRun ? dateLabel(job.nextRun, true) : routineBlockedReason(job) || '等待宿主安排'}`;
         view.last.textContent = job.lastRun ? `最近：${routineStatusLabels[job.lastRun.status] || '未知状态'} · ${dateLabel(job.lastRun.startedAt)}${job.lastRun.summary ? ` · ${excerpt(asText(job.lastRun.summary), 100)}` : ''}` : '最近：尚未运行';
         view.blocked.textContent = routineBlockedReason(job);
         view.blocked.hidden = !view.blocked.textContent;
@@ -1094,8 +1103,40 @@
     updateRoutineControls();
   }
 
+  function reflectionOrder(a, b) {
+    return (dateValue(b.createdAt || b.end)?.getTime() || 0) - (dateValue(a.createdAt || a.end)?.getTime() || 0);
+  }
+  // 最近一页与按需取回的更早条目合并去重；总数变小时按总数截断，避免外部删除后仍留着本地副本。
+  function syncReflections() {
+    const merged = new Map();
+    for (const entry of [...reflectionPage, ...reflectionExtra]) if (entry && entry.id && !merged.has(entry.id)) merged.set(entry.id, entry);
+    const list = [...merged.values()].sort(reflectionOrder);
+    state.reflections = Number.isFinite(state.reflectionTotal) && state.reflectionTotal >= 0 ? list.slice(0, state.reflectionTotal) : list;
+  }
   function sortedReflections() {
-    return [...state.reflections].sort((a, b) => (dateValue(b.createdAt || b.end)?.getTime() || 0) - (dateValue(a.createdAt || a.end)?.getTime() || 0));
+    return [...state.reflections].sort(reflectionOrder);
+  }
+  async function showMoreReflections() {
+    const entries = sortedReflections();
+    if (reflectionVisibleCount < entries.length || !state.reflectionHasMore) { reflectionVisibleCount += 7; renderReflections(); return; }
+    if (reflectionLoading) return;
+    reflectionLoading = true; renderReflections();
+    try {
+      const cursor = entries.at(-1)?.id;
+      const query = cursor ? `?after=${encodeURIComponent(cursor)}` : '';
+      const page = await api(`/api/reflections${query}`);
+      const loaded = entriesFrom(page.reflections, 'reflections');
+      const seen = new Set(reflectionExtra.map((entry) => entry.id));
+      for (const entry of loaded) if (!seen.has(entry.id)) reflectionExtra.push(entry);
+      if (Number.isFinite(page.total)) state.reflectionTotal = page.total;
+      state.reflectionHasMore = page.hasMore === true;
+      syncReflections();
+      reflectionVisibleCount += 7;
+    } catch (error) {
+      feedback('reflection-run-feedback', `未能载入更早的回顾：${errorText(error)}`, true);
+    } finally {
+      reflectionLoading = false; renderReflections();
+    }
   }
   function localDateKey(value) {
     const date = dateValue(value);
@@ -1192,8 +1233,13 @@
     const empty = $('reflection-empty');
     empty.hidden = visible.length > 0;
     if (!visible.length) empty.replaceChildren(!hasState ? loadingState('sun') : emptyState('尚未留下回顾', !state.features.reflections ? '宿主尚未提供回顾接口，请更新后重载。' : '先保存并启用每日回顾，再等待自动执行或手动补跑。', 'sun'));
-    $('reflection-count').textContent = `已显示 ${Math.min(reflectionVisibleCount, entries.length)} / ${entries.length} 条${visible.length > Math.min(reflectionVisibleCount, entries.length) ? ' · 另保留编辑卡片' : ''}`;
-    $('reflections-more').hidden = entries.length <= reflectionVisibleCount;
+    const total = Number.isFinite(state.reflectionTotal) && state.reflectionTotal > 0 ? state.reflectionTotal : entries.length;
+    const shown = Math.min(reflectionVisibleCount, entries.length);
+    $('reflection-count').textContent = `已显示 ${shown} / ${total} 条${visible.length > shown ? ' · 另保留编辑卡片' : ''}`;
+    const more = $('reflections-more');
+    more.hidden = entries.length <= reflectionVisibleCount && !state.reflectionHasMore;
+    more.disabled = reflectionLoading;
+    more.textContent = reflectionLoading ? '载入更早…' : '再显示 7 条';
   }
 
   function buildProfileEditors() {
@@ -2700,8 +2746,15 @@
       }
       try { await refreshState({ timeout: 6000 }); }
       catch { /* 使用有效回执确认已保存项；其余草稿和原始版本保留。 */ }
-      if (receipt.settled && !receipt.remainingSettings.size && !receipt.remainingProfiles.size && !Object.keys(receipt.errors).length) feedback('settings-feedback');
-      return receipt.settled && !receipt.remainingSettings.size && !receipt.remainingProfiles.size && !Object.keys(receipt.errors).length && !hasSettingsDrafts();
+      const settledAll = receipt.settled && !receipt.remainingSettings.size && !receipt.remainingProfiles.size && !Object.keys(receipt.errors).length;
+      if (settledAll) {
+        // 设定正文不需要重启，但也不会改写当前这轮已经发出的上下文：明确说清从下一轮开始生效。
+        const names = { soul: '人格 soul', user: '关于你 user', system: '交流偏好 system' };
+        const savedProfiles = Object.keys(names).filter((name) => receipt.accepted?.has(name));
+        if (savedProfiles.length) feedback('settings-feedback', `已保存 ${savedProfiles.map((name) => names[name]).join('、')}：无需重启，从下一轮对话开始生效，当前这轮不会变。`);
+        else feedback('settings-feedback');
+      }
+      return settledAll && !hasSettingsDrafts();
     } finally {
       settingsSaving = false;
       renderIdentity();
@@ -3025,9 +3078,12 @@
         run.user.status = 'sent';
         run.done = true;
         renderChat();
+        // 已落库但 Markdown 副本同步失败时服务端仍按成功交付，只附一条警告。
+        const warning = typeof frame.warning === 'string' ? frame.warning.trim() : '';
         feedback('chat-feedback', run.source === 'email-review'
-          ? `独立邮件标题与发件人分析${assistant.status === 'complete' ? '已完成' : `：${messageStatus(assistant.status) || '未完整结束'}`}。这些邮件字段不自动带入普通后续会话。`
-          : (name) => assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请回 Harness 的模型设置检查。`);
+          ? `独立邮件标题与发件人分析${assistant.status === 'complete' ? '已完成' : `：${messageStatus(assistant.status) || '未完整结束'}`}。这些邮件字段不自动带入普通后续会话。${warning ? ` ${warning}` : ''}`
+          : (name) => `${assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请回 Harness 的模型设置检查。`}${warning ? ` ${warning}` : ''}`);
+        if (warning) notify(warning);
         return true;
       }
       case 'error':
@@ -3364,7 +3420,7 @@
       if (next) { event.preventDefault(); switchJournalView(next, true); }
     });
   });
-  $('reflections-more').addEventListener('click', () => { reflectionVisibleCount += 7; renderReflections(); });
+  $('reflections-more').addEventListener('click', () => void showMoreReflections());
   $('reflection-settings-open').addEventListener('click', () => openSettings('automation'));
   $('reflection-run').addEventListener('click', () => void runReflection());
   $('settings-reflection-run').addEventListener('click', () => void runReflection());

@@ -137,8 +137,38 @@ export class NativeRuntime {
     if(this.disposals.has(id))return this.disposals.get(id);
     const handle=this.handles.get(id);if(!handle)return;
     this.handles.delete(id);
+    this._forget(id);
     const task=Promise.resolve().then(()=>handle.dispose()).finally(()=>this.disposals.delete(id));
     this.disposals.set(id,task);return task;
+  }
+  // 回顾、记忆候选、资讯与邮件分析用的都是一次性会话：每次运行都新增一个 ID，
+  // 若永不摘除，清单会越积越长，重启后还会逐个尝试恢复并按本插件规则重新限制。
+  // 主会话 ID 必须留在清单里：它既是“模型历史缺失就拒绝静默重建”的依据，
+  // 也是宿主重启恢复后重新施加零工具限制的依据，摘掉会让保护形同虚设。
+  _forget(id){
+    try{
+      if(id===this.store.get('sessionId'))return;
+      const known=this.store.get(this.sessionKey,[]);
+      if(!Array.isArray(known)||!known.includes(id))return;
+      this.store.set(this.sessionKey,known.filter(entry=>entry!==id));
+    }catch{/* 清单写入失败不阻止释放会话 */}
+  }
+  // 启动清理：一次性会话（回顾、记忆候选、资讯、邮件）从不写入本地消息表，
+  // 因此“既不是当前主会话、又没有本地消息、也没有存活宿主 agent”的条目必然是临时残留。
+  // 摘掉它们不会削弱任何保护；有记录、已存活或主会话的条目一律保留，
+  // 避免把仍在运行的会话从限制清单里去掉。
+  pruneSessions() {
+    try{
+      const known=this.store.get(this.sessionKey,[]);
+      if(!Array.isArray(known)||!known.length)return 0;
+      const live=new Set(this.ctx.agents.list().map(agent=>String(agent?.session?.id??'')));
+      const current=this.store.get('sessionId');
+      const recorded=new Set(this.store.db.prepare('SELECT DISTINCT sessionId FROM messages').all().map(row=>row.sessionId));
+      const kept=known.filter(id=>id===current||live.has(id)||recorded.has(id));
+      if(kept.length===known.length)return 0;
+      this.store.set(this.sessionKey,kept);
+      return known.length-kept.length;
+    }catch{return 0;}
   }
   async close() {
     if(this.closeTask)return this.closeTask;

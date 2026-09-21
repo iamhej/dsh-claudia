@@ -273,7 +273,7 @@ export class Maintenance {
       const count = [...text.replace(/\s/gu, '')].length;
       if (!count) throw fail('回顾为空或仅含空白，未保存');
       // 仅作失控兜底；篇幅由提示词软约束，正常回顾远达不到这个长度。
-      if (count > 2000) throw fail('回顾超过 2000 个非空白 Unicode 字符（含标点、英文字母），未保存；不会自动截断正文');
+      if (count > 3000) throw fail('回顾超过 3000 个非空白 Unicode 字符（含标点、英文字母），未保存；不会自动截断正文');
       // 生成期间可能发生外部编辑；再次检查，且 Store 默认 create-only CAS。
       if (!this._enabled('reflectionEnabled')) throw fail('每日回顾已关闭，未保存');
       if (!exists()) this.store.saveReflection({ id, text, start: window.start, end: window.end });

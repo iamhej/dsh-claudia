@@ -11,6 +11,9 @@ import { validateRoutine } from './routine-schema.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 const runningVersion=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version;
 const root=dirname(fileURLToPath(import.meta.url));
+// 回顾正文会随条数线性增长，状态接口不再一次回传全部，只回最近一页；更早的按需分页取。
+const REFLECTION_STATE_LIMIT=14, REFLECTION_PAGE_MAX=50;
+const ID_CURSOR=/^[A-Za-z0-9_-]{1,128}$/;
 
 export function normalizeName(value) {
   if(value===undefined)return 'Claudia';
@@ -44,6 +47,18 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
     activityError='';const id=++applyId;
     try{activityApply=Promise.resolve(services.activity?.setEnabled(value)).catch(()=>{if(id===applyId)activityError='时长组件应用失败，请查看采集状态后重试';}).finally(()=>{if(id===applyId)activityApply=null;});}
     catch{activityApply=null;activityError='时长组件应用失败，请查看采集状态后重试';}
+  };
+  // 回顾按“最新在前”分页；游标用条目 ID 而不是时间戳，避免同一时刻的多条被切在同一页内外。
+  const reflectionPage=(limit=REFLECTION_STATE_LIMIT,after=null)=>{
+    const all=store.reflections();
+    let start=0;
+    if(after!==null){
+      const index=all.findIndex(entry=>entry.id===after);
+      if(index<0)return {reflections:[],total:all.length,hasMore:false};
+      start=index+1;
+    }
+    const page=all.slice(start,start+limit);
+    return {reflections:page,total:all.length,hasMore:start+page.length<all.length};
   };
   const routineSnapshot=()=>services.maintenance?.routines?.snapshot() ?? store.routines();
   const routineMutation=()=>{if(closing||Date.now()<drainingUntil)throw Object.assign(new Error('宿主正在重启，请稍后操作'),{status:409});};
@@ -120,10 +135,13 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
           assistant.content=result.text;assistant.status='complete';
           store.updateMessage(assistant.id,assistant.content,assistant.status);
           send({type:'done',message:assistant});
-        } catch {
-          // Never log or reflect raw mailbox/provider exceptions or excerpts.
+        } catch (failure) {
+          // 绝不记录或回显原始邮箱、provider 或宿主异常及其片段。
+          // 只透传本模块用 fail() 登记的受控错误：它们是固定的中文文案，不含异常细节、路径或凭据；
+          // 未登记的一律退回通用文案，让用户知道失败不等于没有邮件，也不自动重试。
+          const safe=failure?.emailReviewSafe===true&&typeof failure.message==='string'&&failure.message.length>0&&failure.message.length<=300;
           if(assistant){try{store.updateMessage(assistant.id,'',run.cancelled?'cancelled':'error');}catch{}}
-          const error=run.cancelled?'已停止邮件分析；已发往模型的内容不能撤回。':'邮件连接、读取或分析未完成。请核对兼容版、账号授权及模型；失败不等于没有邮件，不会自动重试。';
+          const error=run.cancelled?'已停止邮件分析；已发往模型的内容不能撤回。':safe?failure.message:'邮件连接、读取或分析未完成。请核对兼容版、账号授权及模型；失败不等于没有邮件，不会自动重试。';
           if(res.headersSent)send({type:'error',error});else json(res,503,{error});
         } finally {
           clearInterval(heartbeat);clearTimeout(deadline);res.off('close',onClose);
@@ -131,9 +149,18 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
         }
         return;
       }
+      if(req.method==='GET'&&path==='/api/reflections'){
+        const rawLimit=requestUrl.searchParams.get('limit');
+        const limit=rawLimit===null?REFLECTION_STATE_LIMIT:Number(rawLimit);
+        if(!Number.isInteger(limit)||limit<1||limit>REFLECTION_PAGE_MAX)return json(res,400,{error:`每页条数必须为 1—${REFLECTION_PAGE_MAX} 的整数`});
+        const after=requestUrl.searchParams.get('after');
+        if(after!==null&&!ID_CURSOR.test(after))return json(res,400,{error:'分页游标无效'});
+        return json(res,200,reflectionPage(limit,after));
+      }
       if(req.method==='GET'&&path==='/api/state'){
         const end=new Date(),start=new Date(end.getTime()-86400000);
-        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:store.reflections(),memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false},logs:logger.status(),routines:routineSnapshot(),routineRuns:store.routineRuns(),routineCapability:services.maintenance?.routines?.capability()??ROUTINE_CAPABILITY});
+        const page=reflectionPage();
+        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:page.reflections,reflectionTotal:page.total,reflectionHasMore:page.hasMore,memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false},logs:logger.status(),routines:routineSnapshot(),routineRuns:store.routineRuns(),routineCapability:services.maintenance?.routines?.capability()??ROUTINE_CAPABILITY});
       }
       if(req.method==='GET'&&path==='/api/health')return json(res,200,{ok:true,plugin:'dsh-claudia',version:runningVersion,pid:process.pid,home,profile,busy:busy()||hostBusy(),runtime:await runtime.status()});
       if(req.method==='POST'&&path==='/api/restart'){
@@ -285,11 +312,17 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
             assistant.status=run.cancelled||result.reason?.kind==='aborted'?'cancelled':result.reason?.kind==='max-tokens'?'truncated':result.reason?.kind==='completed'?'complete':'error';
             if(assistant.status==='error'||!assistant.content&&assistant.status==='complete')throw new Error('incomplete');
             store.updateMessage(assistant.id,assistant.content,assistant.status);send({type:'done',message:assistant});
-          }catch{
-            if(assistant)store.updateMessage(assistant.id,partial,run.cancelled?'cancelled':'error');
+          }catch(error){
+            // SQLite 已经提交、只是 Markdown 副本同步失败时，回复本身是保存成功的：
+            // 不能报成模型调用失败，也不能把已保存的回复标成 error，否则用户会以为没存上而重发。
+            const committed=error?.committed===true;
+            // 收尾写也可能一起失败；不能让它盖掉本该给出的失败原因。
+            if(assistant&&!committed)try{store.updateMessage(assistant.id,partial,run.cancelled?'cancelled':'error');}catch{}
             // Do not reflect arbitrary provider error text: it may contain credentials.
             const message='模型调用或会话恢复失败，请在 Harness 检查模型、凭据与网络。原会话没有被清空。';
-            runtime.error=run.cancelled?'':message;send({type:'error',error:run.cancelled?'已停止回复':message});
+            runtime.error=run.cancelled||committed?'':message;
+            if(committed&&assistant)send({type:'done',message:assistant,warning:'回复已保存到本地数据库，但 Markdown 副本同步失败；下次启动时会自动重建，请不要重复发送。'});
+            else send({type:'error',error:run.cancelled?'已停止回复':committed?'内容已保存到本地数据库，但 Markdown 副本同步失败；本次未继续调用模型，请不要重复发送。':message});
           }finally{res.off('close',onClose);await run.cancelPromise?.catch(()=>{});res.end();}
         }finally{if(active===run)active=null;run.finish();}
         return;

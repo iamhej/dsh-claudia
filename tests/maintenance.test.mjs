@@ -213,7 +213,7 @@ test('真实临时 Store 的 create-only 回顾保护外部修改', async t => {
   await restart.tick(now); await restart.close();
   assert.equal(store.reflections()[0].text, '外部修改，保持原文'); assert.equal(f.calls.length, 1);
 });
-test('回顾接受很短正文及恰好 2000 码点，拒绝 2001、空白和非法 Unicode，不截断正文', async t => {
+test('回顾接受很短正文及恰好 3000 码点，拒绝 3001、空白和非法 Unicode，不截断正文', async t => {
   const cases = [
     { name: '资料少时很短', text: '资料有限。', valid: true },
     { name: '一个字符无下限', text: '短', valid: true },
@@ -221,9 +221,10 @@ test('回顾接受很短正文及恰好 2000 码点，拒绝 2001、空白和非
     { name: '500 个混合码点含辅助平面汉字', text: '汉A!7\u{20000}'.repeat(100), valid: true },
     { name: '空白不计入且保留内部空白', text: ` \t${'汉 A!7\u{20000}\n'.repeat(100)}\u3000`, valid: true },
     { name: '501 汉字仍在宽松上限内', text: '字'.repeat(501), valid: true },
-    { name: '2001 汉字', text: '字'.repeat(2001), error: /超过 2000.*不会自动截断/ },
-    { name: '2000 字加标点也超限', text: '字'.repeat(2000) + '。', error: /超过 2000/ },
-    { name: '英文也全部计数', text: 'a'.repeat(2001), error: /超过 2000/ },
+    { name: '3000 汉字刚好通过', text: '字'.repeat(3000), valid: true },
+    { name: '3001 汉字', text: '字'.repeat(3001), error: /超过 3000.*不会自动截断/ },
+    { name: '3000 字加标点也超限', text: '字'.repeat(3000) + '。', error: /超过 3000/ },
+    { name: '英文也全部计数', text: 'a'.repeat(3001), error: /超过 3000/ },
     { name: '空字符串', text: '', error: /为空或仅含空白/ },
     { name: '各类空白', text: ' \n\t\r\u00a0\u3000\ufeff', error: /为空或仅含空白/ },
     { name: '孤立高代理项', text: '记录\ud800', error: /非法 Unicode/ },
@@ -250,7 +251,7 @@ test('回顾宿主错误不泄露私密内容', async t => {
 test('自动耗尽三次后明确手动仅运行一次，重复 UUID（含大小写和重启）不再收费', async t => {
   const f = fixture(t, { reflectionEnabled: true }), m = f.create();
   const run = f.runtime.run.bind(f.runtime);
-  f.runtime.run = async (id, prompt) => ({ ...await run(id, prompt), text: '字'.repeat(2001) });
+  f.runtime.run = async (id, prompt) => ({ ...await run(id, prompt), text: '字'.repeat(3001) });
   for (const minutes of [0, 5, 15]) await m.runReflection(new Date(now.getTime() + minutes * 60000));
   assert.equal(m.status().reflection.attempts, 3); assert.equal(f.calls.length, 3);
   assert.equal(m.status().reflection.nextRetryAt, null);
@@ -274,7 +275,7 @@ test('手动失败不增加或重置自动预算，不触发本期自动重试�
     const initial = { window: window.end, state: 'error', attempts, nextRetryAt: null, done: false };
     const f = fixture(t, { reflectionEnabled: true, maintenanceStateV1: { reflection: initial } }), m = f.create();
     const run = f.runtime.run.bind(f.runtime);
-    f.runtime.run = async (id, prompt) => ({ ...await run(id, prompt), text: '字'.repeat(2001) });
+    f.runtime.run = async (id, prompt) => ({ ...await run(id, prompt), text: '字'.repeat(3001) });
     const requestId = randomUUID();
     await m.runReflection(now, { manual: true, requestId });
     assert.equal(m.status().reflection.attempts, attempts); assert.equal(m.status().reflection.state, 'error');

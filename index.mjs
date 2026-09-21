@@ -10,8 +10,9 @@ import { EmailAccount } from './email-account.mjs';
 import { EmailReview } from './email-review.mjs';
 import { ActivityTracker } from './activity.mjs';
 import { Maintenance } from './maintenance.mjs';
-import { BackgroundService, createInstaller } from './lifecycle.mjs';
+import { BackgroundService, createInstaller, pruneUpdates } from './lifecycle.mjs';
 import { RestartControl } from './restart.mjs';
+import { createHostBusy } from './host-busy.mjs';
 import { Logger, observeProcess } from './logger.mjs';
 import { readFileSync } from 'node:fs';
 const runningVersion=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version;
@@ -37,7 +38,14 @@ export async function apply(ctx,config={}) {
   ctx.inject(['web'], child => { web=child.web; child.effect(()=>()=>{web=undefined;}); });
   ctx.inject(['settings'], child => { settings=child.settings; child.effect(()=>()=>{settings=undefined;}); });
   const getPlugins=createPluginInventory({home,profile,hostAnchor:config.dshBin??process.argv[1],getEntries:()=>ctx.get('loader')?.entries()??null});
-  const app=await startServer({dataDir,port,home,profile,logger,getPlugins,hasOtherAgents:runtime=>{const owned=new Set([...runtime.handles.values(),...(news?.handles.values()??[]),...(emailReview?.handles.values()??[])].filter(h=>!h.borrowed).map(h=>h.agent));return ctx.agents.list().some(a=>!owned.has(a));},createRuntime:store=>new NativeRuntime(ctx,store,{reuseLiveAgent:true,onUnexpectedTools:({sessionId,tools})=>logger.warn('chat.tools.suppressed',{sessionId,tools})}),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
+  // 宿主 agent 清单里凡是本插件自己持有的都算“自有”，借用（borrowed）的宿主 live agent 同样自有：
+  // 复用 live agent 时它正是本插件主对话所在的会话，之前把它过滤掉会让 hostBusy 恒为真，
+  // 一键重启与邮件开关被永久卡住，而日志里看不出是谁在占（判定规则见 host-busy.mjs，低频记日志）。
+  // 各服务持有的 runtime 位置不同：news 是 NewsRuntime（真正的 runtime 在 .runtime），
+  // emailReview 是 EmailReview（.reader / .analysis）。少算任何一个，都会把它们自己的会话
+  // 当成“别人在用”，一键重启和邮件开关照旧被卡住。
+  const hasOtherAgents=createHostBusy({ctx,logger,getRuntimes:runtime=>[runtime,news?.runtime,emailReview?.reader,emailReview?.analysis]});
+  const app=await startServer({dataDir,port,home,profile,logger,getPlugins,hasOtherAgents,createRuntime:store=>new NativeRuntime(ctx,store,{reuseLiveAgent:true,onUnexpectedTools:({sessionId,tools})=>logger.warn('chat.tools.suppressed',{sessionId,tools})}),getHostUrl:hostUrl,openFolder:open,openHarness:()=>open(ctx.connection.authenticatedUrl(hostUrl())),
     createServices:({store,runtime,isBusy,restartBusy,pluginPort})=>{
       const options={dataDir,home,profile,dshBin:config.dshBin??process.argv[1],nodeBin:config.nodeBin??process.execPath,hostPort:ctx.webServer.port,pluginPort,pnpmPath:config.pnpmPath};
       const activity=new ActivityTracker(dataDir,{logger});
@@ -65,6 +73,13 @@ export async function apply(ctx,config={}) {
     logger.info('plugin.ready',{version:runningVersion,url:app.url,hostPort:ctx.webServer.port,pid:process.pid,supervised:process.env.CLAUDIA_SUPERVISED==='1'});
     app.services.activity.setEnabled(app.store.get('activityEnabled',false)).catch(()=>{});
     app.services.maintenance.start().catch(()=>{});
+    // 启动时清理上次更新留下的临时包、过期备份，以及一次性会话的累积 ID。
+    try{pruneUpdates({dataDir,home,profile,logger});}catch(error){logger.warn('update.prune.fail',{error});}
+    try{
+      const runtimes=[app.runtime,app.services.news?.runtime,app.services.emailReview?.reader,app.services.emailReview?.analysis].filter(Boolean);
+      const dropped=runtimes.reduce((sum,runtime)=>sum+(runtime.pruneSessions?.()??0),0);
+      if(dropped)logger.info('sessions.prune',{dropped});
+    }catch(error){logger.warn('sessions.prune.fail',{error});}
     if(config.openBrowser!==false&&ctx.webStartup.openBrowser&&!process.env.CLAUDIA_SUPERVISED&&!process.env.SSH_CONNECTION&&!process.env.SSH_TTY)open(app.url).catch(()=>{});
   });
 }

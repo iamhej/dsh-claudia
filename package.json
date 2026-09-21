@@ -1,6 +1,6 @@
 {
   "name": "dsh-claudia",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "A personal, two-pane companion UI and Journal plugin for DeepSeek Harness",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/iamhej/dsh-claudia.git" },
@@ -11,7 +11,7 @@
   "exports": { ".": "./index.mjs" },
   "engines": { "node": "^22.19.0 || >=24.0.0" },
   "bin": { "dsh-claudia": "./bin/claudia.mjs" },
-  "files": ["index.mjs", "plugins.mjs", "email-control.mjs", "email-account.mjs", "email-review.mjs", "native-runtime.mjs", "server.mjs", "store.mjs", "records.mjs", "routine-schema.mjs", "routines.mjs", "news-runtime.mjs", "network-routine.mjs", "public-web.mjs", "activity.mjs", "maintenance.mjs", "lifecycle.mjs", "restart.mjs", "logger.mjs", "bin/", "native/", "cordis.patch.yml", "public/", "README.md", "LICENSE"],
+  "files": ["index.mjs", "plugins.mjs", "email-control.mjs", "email-account.mjs", "email-review.mjs", "native-runtime.mjs", "server.mjs", "store.mjs", "records.mjs", "routine-schema.mjs", "routines.mjs", "news-runtime.mjs", "network-routine.mjs", "public-web.mjs", "activity.mjs", "maintenance.mjs", "lifecycle.mjs", "restart.mjs", "logger.mjs", "host-busy.mjs", "bin/", "native/", "cordis.patch.yml", "public/", "README.md", "LICENSE"],
   "keywords": ["dsh-plugin", "deepseek-harness", "journal", "personal-assistant"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "peerDependencies": {
