@@ -196,7 +196,7 @@ async function assertPersisted(f, values) {
     const db = new DatabaseSync(join(f.dataDir, 'claudia.sqlite'), { readOnly: true });
     try {
       const row = db.prepare('SELECT value FROM settings WHERE key=?').get('reflectionSources');
-      assert.deepEqual(JSON.parse(row.value), ['journal', 'todos', ...(values.activityEnabled ? ['activity'] : [])]);
+      assert.deepEqual(JSON.parse(row.value), ['journal', 'todos', 'messages', ...(values.activityEnabled ? ['activity'] : [])]);
     } finally { db.close(); }
   }
 }
