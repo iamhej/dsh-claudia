@@ -365,7 +365,7 @@ test('四 bool 仅接受真正布尔值，非法值不产生部分保存；activ
     const result = assertStatus(await f.post('/api/settings', values), 200);
     for (const key of boolKeys) assert.equal(result.settings[key], enabled, key);
     assert.equal((await f.state()).activity.enabled, enabled);
-    assert.deepEqual(f.app.store.get('reflectionSources'), enabled ? ['journal', 'todos', 'activity'] : ['journal', 'todos']);
+    assert.deepEqual(f.app.store.get('reflectionSources'), enabled ? ['journal', 'todos', 'messages', 'activity'] : ['journal', 'todos', 'messages']);
   }
   assert.deepEqual(f.calls.activity, [true, false]);
   assert.deepEqual(f.calls.background, []);

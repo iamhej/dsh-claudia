@@ -459,9 +459,18 @@ svg { flex: 0 0 auto; }
 .routine-source-list { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .routine-source { border-top: 1px solid var(--line); padding-top: 8px; }
 .routine-source .entry-text { font-size: 11px; }
-.routine-events { margin-top: 24px; padding-top: 16px; border-top: 1px dashed rgba(71,98,112,.22); }
-.routine-events > h3 { font-size: 12px; font-weight: 500; color: #657c89; }
-.routine-events > .entry-list, #today-routine-list { margin-top: 12px; }
+.message.is-routine-card .message-meta { flex-wrap: wrap; }
+.routine-card-tag { font-size: 10px; color: #6a5fb0; white-space: normal; }
+.routine-stream-card { background: rgba(238,237,254,.62); border-color: rgba(83,74,183,.3); border-radius: 18px; }
+.routine-stream-card > .entry-text { margin: 0; font-size: 12px; }
+.routine-stream-items { display: flex; flex-direction: column; gap: 13px; }
+.routine-stream-item + .routine-stream-item { border-top: 1px solid rgba(83,74,183,.18); padding-top: 12px; }
+.routine-stream-title { font-size: 13px; font-weight: 600; line-height: 1.7; margin: 0 0 5px; overflow-wrap: anywhere; }
+.routine-stream-item .entry-text { margin: 0 0 6px; }
+.message.is-reflection-card .message-meta { flex-wrap: wrap; }
+.reflection-card-tag { font-size: 10px; color: #0f6e56; white-space: normal; }
+.reflection-stream-card { background: rgba(225,245,238,.66); border-color: rgba(15,110,86,.3); border-radius: 18px; }
+.reflection-stream-card > .entry-text { margin: 0; font-size: 12px; }
 @media (min-width: 1151px) { .space-header { padding-left: 105px; padding-right: 105px; } }
 @media (max-width: 650px) { .routine-schedule .field > input { font-size: 16px; } }
 @media (max-width: 380px) { .routine-schedule { grid-template-columns: minmax(0, 1fr); } .routine-card-header { flex-wrap: wrap; } }

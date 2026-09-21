@@ -58,11 +58,6 @@
           <p class="welcome-footnote">点选只会填入输入框，由你决定何时发送。</p>
         </section>
         <div id="message-list" class="message-list" role="log" aria-label="对话消息" aria-live="off"></div>
-        <section id="routine-chat-events" class="routine-events" aria-labelledby="routine-chat-title" hidden>
-          <h3 id="routine-chat-title">Routine · 独立事件</h3>
-          <p class="field-help">仅同步展示，未加入模型历史，也不会作为聊天上下文发送。</p>
-          <div id="routine-chat-list" class="entry-list"></div>
-        </section>
       </div>
 
       <div class="composer-area">
@@ -112,15 +107,6 @@
           <article class="glass-card">
             <div class="section-heading"><h3><svg class="icon"><use href="#i-book"/></svg>最近留下的片段</h3><button class="text-button" type="button" data-go="journal">查看 Journal<svg class="icon"><use href="#i-arrow"/></svg></button></div>
             <div id="today-journal"></div>
-          </article>
-          <article class="glass-card reflection-preview-card">
-            <div class="section-heading"><h3><svg class="icon"><use href="#i-sun"/></svg>最新每日回顾</h3><button id="today-reflection-open" class="text-button" type="button">查看回顾<svg class="icon"><use href="#i-arrow"/></svg></button></div>
-            <div id="today-reflection"></div>
-          </article>
-          <article id="today-routine-section" class="glass-card" hidden>
-            <div class="section-heading"><h3>Routine · 已投递</h3><button class="text-button" type="button" data-go="routine">管理 Routine<svg class="icon"><use href="#i-arrow"/></svg></button></div>
-            <p class="field-help">展示最近 20 次运行中成功投递的摘要与资讯，可展开查看依据与来源；不加入模型历史。</p>
-            <div id="today-routine-list" class="entry-list"></div>
           </article>
           <article class="glass-card memory-preview-card">
             <div class="section-heading"><h3><svg class="icon"><use href="#i-memory"/></svg>值得记住的你</h3><button class="text-button" type="button" data-go="memories">管理记忆<svg class="icon"><use href="#i-arrow"/></svg></button></div>

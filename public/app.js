@@ -849,22 +849,8 @@
     return link;
   }
 
-  function buildRoutineRun(run) {
-    const card = element('article', 'routine-run');
-    card.dataset.runId = asId(run.id);
-    const heading = element('h4');
-    const meta = element('p', 'field-help');
-    const windowLabel = element('p', 'field-help');
-    const topics = element('p', 'field-help');
-    const fallback = element('p', 'field-help');
-    const outcome = element('p', 'field-help');
-    const body = element('p', 'entry-text');
-    const overview = element('details', 'routine-overview');
-    overview.append(element('summary', '', '查看运行总摘要'));
-    const items = element('div', 'routine-items');
-    const reason = element('p', 'field-help');
+  function buildRoutineSources(runId) {
     const details = element('details', 'routine-sources');
-    const summary = element('summary', '', '查看依据与来源');
     const sources = element('div', 'routine-source-list');
     const retry = element('button', 'text-button', '重新读取依据与来源');
     retry.type = 'button';
@@ -877,8 +863,8 @@
       retry.hidden = true;
       sources.replaceChildren(element('p', 'field-help', '正在读取依据与来源…'));
       try {
-        const detail = await api(`/api/routine-runs/${encodeURIComponent(card.dataset.runId)}`);
-        if (!detail || asId(detail.id) !== card.dataset.runId || !Array.isArray(detail.sources)) throw new Error('本次运行的依据与来源尚未就绪。');
+        const detail = await api(`/api/routine-runs/${encodeURIComponent(runId)}`);
+        if (!detail || asId(detail.id) !== runId || !Array.isArray(detail.sources)) throw new Error('本次运行的依据与来源尚未就绪。');
         sources.replaceChildren();
         for (const source of detail.sources) {
           if (!source || typeof source.text !== 'string' && source.kind !== 'web') continue;
@@ -898,9 +884,27 @@
         retry.hidden = false;
       } finally { loading = false; }
     }
-    details.append(summary, sources, retry);
+    details.append(element('summary', '', '查看依据与来源'), sources, retry);
     details.addEventListener('toggle', () => { if (details.open) void load(); });
     retry.addEventListener('click', () => void load());
+    return details;
+  }
+
+  function buildRoutineRun(run) {
+    const card = element('article', 'routine-run');
+    card.dataset.runId = asId(run.id);
+    const heading = element('h4');
+    const meta = element('p', 'field-help');
+    const windowLabel = element('p', 'field-help');
+    const topics = element('p', 'field-help');
+    const fallback = element('p', 'field-help');
+    const outcome = element('p', 'field-help');
+    const body = element('p', 'entry-text');
+    const overview = element('details', 'routine-overview');
+    overview.append(element('summary', '', '查看运行总摘要'));
+    const items = element('div', 'routine-items');
+    const reason = element('p', 'field-help');
+    const details = buildRoutineSources(asId(run.id));
     card.append(heading, meta, windowLabel, topics, fallback, outcome, body, overview, items, reason, details);
     card.routineView = { heading, meta, windowLabel, topics, fallback, outcome, body, overview, items, reason };
     return card;
@@ -1051,13 +1055,6 @@
     }
     if (!$('routine-list').childElementCount) $('routine-list').append(!hasState ? loadingState('sun') : emptyState(state.routines ? '还没有启用的约定' : '当前服务尚未提供 Routine', state.routines ? '在上方保存任务，或展开下方已停用任务；默认资讯卡不会自动联网。' : '兼容旧版状态，不尝试写入；现有 Journal、Todo 和设置仍可使用。', 'sun'));
     if (!$('routine-disabled-list').childElementCount) $('routine-disabled-list').append(element('p', 'field-help', '暂无停用任务；这里只展示服务实际返回的定义。'));
-    const delivered = state.routineRuns.filter((run) => run.status === 'success' && run.deliveredAt && ['today', 'both'].includes(run.delivery));
-    $('today-routine-section').hidden = !state.routines && !delivered.length;
-    syncRoutineRuns($('today-routine-list'), delivered);
-    if (!delivered.length) $('today-routine-list').append(element('p', 'field-help', '暂时没有成功投递的摘要。'));
-    const chatEvents = delivered.filter((run) => run.delivery === 'both');
-    $('routine-chat-events').hidden = !chatEvents.length;
-    syncRoutineRuns($('routine-chat-list'), chatEvents);
     updateRoutineControls();
   }
 
@@ -1104,16 +1101,6 @@
     const date = dateValue(value);
     if (!date) return '';
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  }
-  function renderTodayReflection() {
-    const target = $('today-reflection');
-    target.replaceChildren();
-    const latest = sortedReflections()[0];
-    if (!hasState) target.append(loadingState('sun'));
-    else if (!latest) target.append(emptyState('还没有每日回顾', '先在设置中保存并启用每日回顾，再等待自动执行或在 Journal 中手动补跑。', 'sun'));
-    else {
-      target.append(element('p', 'field-help', `${dateLabel(latest.start)} — ${dateLabel(latest.end)}`), element('p', 'entry-text', excerpt(latest.text, 220)));
-    }
   }
   function buildReflectionCard(entry) {
     const card = element('article', 'glass-card reflection-card');
@@ -1457,13 +1444,86 @@
     else target.textContent = text;
   }
 
+  function streamCards() {
+    const today = localDateKey(new Date());
+    const cards = [];
+    for (const run of state.routineRuns) {
+      if (run.status !== 'success' || run.delivery !== 'both' || !run.deliveredAt) continue;
+      if (localDateKey(run.deliveredAt) !== today) continue;
+      cards.push({ at: dateValue(run.deliveredAt)?.getTime() || 0, kind: 'routine', run });
+    }
+    for (const entry of state.reflections) {
+      const at = dateValue(entry.end || entry.createdAt);
+      if (!at || localDateKey(entry.end || entry.createdAt) !== today) continue;
+      cards.push({ at: at.getTime(), kind: 'reflection', reflection: entry });
+    }
+    return cards.sort((a, b) => a.at - b.at);
+  }
+
+  function buildStreamCard(card) {
+    if (card.kind === 'reflection') return buildReflectionStreamCard(card.reflection);
+    const run = card.run;
+    const article = element('article', 'message is-routine-card');
+    const meta = element('div', 'message-meta');
+    meta.append(element('span', 'display-name message-name', asText(run.jobName) || 'Routine'));
+    meta.append(element('span', 'routine-card-tag', '独立事件 · 未进入模型历史'));
+    if (dateValue(run.deliveredAt)) {
+      const time = element('time', '', dateLabel(run.deliveredAt));
+      time.dateTime = run.deliveredAt;
+      meta.append(time);
+    }
+    const bubble = element('div', 'message-bubble routine-stream-card');
+    const items = Array.isArray(run.items) ? run.items.filter((item) => item && typeof item === 'object') : [];
+    if (items.length) {
+      const list = element('div', 'routine-stream-items');
+      for (const item of items) {
+        const entry = element('div', 'routine-stream-item');
+        entry.append(element('p', 'routine-stream-title', asText(item.title) || '未提供标题'));
+        const body = asText(item.summary);
+        if (body) entry.append(element('p', 'entry-text', body));
+        if (item.url) entry.append(routineSourceLink(item.url));
+        list.append(entry);
+      }
+      bubble.append(list);
+    } else {
+      bubble.append(element('p', 'entry-text', asText(run.summary) || '本次没有摘要内容。'));
+    }
+    bubble.append(buildRoutineSources(asId(run.id)));
+    article.append(meta, bubble);
+    return article;
+  }
+
+  function buildReflectionStreamCard(entry) {
+    const article = element('article', 'message is-reflection-card');
+    const meta = element('div', 'message-meta');
+    meta.append(element('span', 'display-name message-name', `${displayName()} 的观察`));
+    meta.append(element('span', 'reflection-card-tag', '独立事件 · 未进入模型历史'));
+    if (dateValue(entry.end || entry.createdAt)) {
+      const time = element('time', '', dateLabel(entry.end || entry.createdAt, true));
+      time.dateTime = asText(entry.end || entry.createdAt);
+      meta.append(time);
+    }
+    const bubble = element('div', 'message-bubble reflection-stream-card');
+    bubble.append(element('p', 'entry-text', asText(entry.text) || '这一期没有留下正文。'));
+    article.append(meta, bubble);
+    return article;
+  }
+
+
   function renderChat(forceScroll = false) {
     if (activeRun?.renderFrame) { cancelAnimationFrame(activeRun.renderFrame); activeRun.renderFrame = null; }
     const nearBottom = nearChatBottom();
     const list = $('message-list');
     list.replaceChildren();
-    $('welcome').hidden = state.messages.length > 0;
-    for (const message of state.messages) {
+    const cards = streamCards();
+    $('welcome').hidden = state.messages.length > 0 || cards.length > 0;
+    const entries = [
+      ...state.messages.map((message) => ({ at: dateValue(message.createdAt)?.getTime() || 0, message })),
+      ...cards.map((card) => ({ at: card.at, card })),
+    ].sort((a, b) => a.at - b.at || (a.card ? -1 : 1));
+    for (const entry of entries) {
+      if (entry.card) { list.append(buildStreamCard(entry.card)); continue; }
+      const message = entry.message;
       const isEmailReview = message.source === 'email-review';
       const article = element('article', `message${message.role === 'user' ? ' is-user' : ''}${isEmailReview ? ' is-email-review' : ''}`);
       const meta = element('div', 'message-meta');
@@ -1514,7 +1574,6 @@
     renderTodos();
     renderRoutines();
     renderCandidates();
-    renderTodayReflection();
     renderProfiles();
     renderReflections();
     renderServices();
@@ -2601,7 +2660,7 @@
     const warnings = [];
     if (settings.allowContext) warnings.push('以后主动发送对话时，会向 Harness 配置的模型服务自动发送最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加模型费用。关闭不会撤回已发送的内容。');
     if (settings.activityEnabled) warnings.push('在本机记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文；开启每日回顾后，可用时长会随回顾内容外发。');
-    if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo 和可选应用时长发送给模型生成回顾，会产生费用。');
+    if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给模型生成回顾，会产生费用。');
     if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启 Harness、短暂断开连接。');
     if (settings.memorySuggestionsEnabled) warnings.push('允许模型处理内容并生成记忆候选，可能产生费用；不会自动写入长期记忆，仍需你逐条接受。');
     if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字及 soul / user / system 正文会在后续对话中作为上下文发送给模型服务，可能增加费用，不受“附带个人记录”开关限制。请勿填写密钥或不愿外发的隐私。保存正文和名字本身不调用模型。');
@@ -2766,7 +2825,7 @@
     updateControls();
     let sent = false;
     try {
-      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo 和可选应用时长发送给 Harness 所选模型，可能产生费用。约 300 字，最多 500 字、无最低字数，提炼洞察而非抄流水账。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
+      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给 Harness 所选模型，可能产生费用。篇幅宁短勿长，只写值得回顾的事，不凑字数。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
         reflectionFeedback('已取消，未提交运行请求；自动开关与其它草稿保持不变。');
         return;
       }
@@ -3304,10 +3363,6 @@
       else if (event.key === 'End') next = 'reflections';
       if (next) { event.preventDefault(); switchJournalView(next, true); }
     });
-  });
-  $('today-reflection-open').addEventListener('click', () => {
-    switchTab('journal');
-    switchJournalView('reflections');
   });
   $('reflections-more').addEventListener('click', () => { reflectionVisibleCount += 7; renderReflections(); });
   $('reflection-settings-open').addEventListener('click', () => openSettings('automation'));

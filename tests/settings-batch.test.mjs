@@ -177,7 +177,7 @@ test('五个 bool 一次 settings 写入加两个 profiles，响应和磁盘一�
   assert.notEqual(result.settingsRevision, state.settingsRevision);
   assert.deepEqual(f.activityCalls, [true]);
   const db = new DatabaseSync(join(f.root, 'claudia.sqlite'), { readOnly: true });
-  try { assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM settings WHERE key='reflectionSources'").get().value), ['journal', 'todos', 'activity']); }
+  try { assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM settings WHERE key='reflectionSources'").get().value), ['journal', 'todos', 'messages', 'activity']); }
   finally { db.close(); }
   const again = ok(await f.batch(payload(result, values, { user: '用户自愿填写', system: '系统正文' })));
   assert.deepEqual(again.saved, []);
@@ -344,7 +344,7 @@ test('运行时 I/O 失败返回 200 已保存项与安全错误并停止后续�
     assert.deepEqual(result.profiles, f.app.store.profiles());
     assert.equal(result.settingsRevision, f.app.store.records.read('settings.md').revision);
     assert.deepEqual(f.activityCalls, failure.saved.includes('settings') ? [true] : []);
-    if (failure.saved.includes('settings')) assert.deepEqual(f.app.store.get('reflectionSources'), ['journal', 'todos', 'activity']);
+    if (failure.saved.includes('settings')) assert.deepEqual(f.app.store.get('reflectionSources'), ['journal', 'todos', 'messages', 'activity']);
     assert.equal(f.context.isBusy(), false);
   }
 });
@@ -361,7 +361,7 @@ test('慢 activity 初始化不阻塞 200，后续关闭立即保存且旧失败
   assert.equal(unrelated.settingsEffect.state, 'applying'); assert.deepEqual(f.activityCalls, [true]);
   const disabled = ok(await f.batch(payload(unrelated, { activityEnabled: false })));
   assert.equal(disabled.settings.activityEnabled, false);
-  assert.deepEqual(f.app.store.get('reflectionSources'), ['journal', 'todos']);
+  assert.deepEqual(f.app.store.get('reflectionSources'), ['journal', 'todos', 'messages']);
   assert.deepEqual(f.activityCalls, [true, false]);
   f.gates[1].resolve();
   assert.equal((await f.state()).settingsEffect.state, 'applied');

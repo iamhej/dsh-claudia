@@ -228,7 +228,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
           const result=store.saveSettingsBatch(data);
           if(result.saved.includes('settings')){
             const activity=store.get('activityEnabled',false);
-            try{store.set('reflectionSources',['journal','todos',...(activity?['activity']:[])]);}
+            try{store.set('reflectionSources',['journal','todos','messages',...(activity?['activity']:[])]);}
             catch{result.errors.settings=[result.errors.settings,'行为配置已保存，但回顾来源同步失败，请检查本机存储后重试'].filter(Boolean).join('；');}
             if(Object.hasOwn(data.settings,'activityEnabled')&&(oldActivity!==activity||services.activity?.status().error||activityError))applyActivity(activity);
           }
@@ -248,7 +248,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
           if(data.assistantName!==undefined&&name!==store.get('assistantName','Claudia'))store.set('assistantName',name);
           for(const key of boolKeys)if(data[key]!==undefined&&data[key]!==store.get(key,false))store.set(key,data[key]);
           if(data.activityEnabled!==undefined){
-            store.set('reflectionSources',['journal','todos',...(data.activityEnabled?['activity']:[])]);
+            store.set('reflectionSources',['journal','todos','messages',...(data.activityEnabled?['activity']:[])]);
             if(oldActivity!==data.activityEnabled||services.activity?.status().error||activityError)applyActivity(data.activityEnabled);
           }
           return json(res,200,{settings:safeSettings(),settingsEffect:effect(),restart:restartStatus()});
