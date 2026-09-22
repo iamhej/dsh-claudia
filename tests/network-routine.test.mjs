@@ -431,6 +431,16 @@ for (const [name, text] of invalidResults) test(`invalid schema 必须 failed：
   noDelivery(await f.run(f.save()), 'failed');
 });
 
+test('JSON 被代码围栏包住时按结构照常接受，不因装饰整期失败', async () => {
+  const f = policyFixture();
+  await f.policy.search({ queries: f.policy.queries });
+  for (const text of ['```json\n' + JSON.stringify(success()) + '\n```', '说明：\n' + JSON.stringify(success()) + '\n以上。']) {
+    const result = f.policy.finish(text);
+    assert.equal(result.status, 'success');
+    assert.equal(result.items.length, 1);
+  }
+});
+
 test('七日前的精确边界允许；只引用本次搜索分配的 ID', async () => {
   const f = policyFixture();
   f.response.sources[0].publishedAt = '2026-09-11T12:00:00.000Z';
