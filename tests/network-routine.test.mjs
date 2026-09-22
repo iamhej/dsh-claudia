@@ -441,6 +441,30 @@ test('JSON 被代码围栏包住时按结构照常接受，不因装饰整期失
   }
 });
 
+test('模型跳过搜索直接作答时只补跑一次，补跑成功则正常投递', async t => {
+  const f = await fixture(t);
+  let turns = 0;
+  f.newsTurn = async policy => {
+    turns += 1;
+    if (turns === 1) return completed(silent());
+    await policy.search({ queries: policy.queries });
+    return completed(success());
+  };
+  const run = await f.run(f.save());
+  assert.equal(run.status, 'success');
+  assert.equal(f.newsCalls.length, 2, '必须只补跑一次');
+  assert.equal(f.newsCalls[1].id, f.newsCalls[0].id, '补跑复用同一会话，不留下残余会话');
+  assert.match(f.newsCalls[1].prompt, /web_search/);
+  assert.equal(run.searchCalls, 2);
+});
+
+test('补跑一次仍未搜索才判失败，不无限重试', async t => {
+  const f = await fixture(t);
+  f.newsTurn = async () => completed(silent());
+  noDelivery(await f.run(f.save()), 'failed');
+  assert.equal(f.newsCalls.length, 2, '最多两次，不能无限重试');
+});
+
 test('七日前的精确边界允许；只引用本次搜索分配的 ID', async () => {
   const f = policyFixture();
   f.response.sources[0].publishedAt = '2026-09-11T12:00:00.000Z';
