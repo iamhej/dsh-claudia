@@ -26,8 +26,8 @@ export function validateRoutine(value) {
   return { name: value.name, prompt: value.prompt, schedule: validateSchedule(value.schedule), allowNetwork: value.allowNetwork, delivery: value.delivery, enabled: value.enabled };
 }
 export const DEFAULT_ROUTINE = Object.freeze({
-  name: '每日资讯 · AI Native',
-  prompt: '读取过去 24 小时的对话、Journal、待办与回顾，推演我可能关心的话题。推演不出来时，使用兜底话题「前沿的 AI Native app 增长资讯」，而不是跳过。\n只把话题词发给搜索提供方，不发送个人原始记录。搜索近 24 小时至 1 周的信息，挑选最值得看一眼的 1—3 条，附原始链接。\n挑选偏好：优先有实质进展的消息（模型发布、厂商与重要人物动向、值得关注的新产品）；同一件事只留一条；跳过空泛的营销软文、SEO 聚合页、没有信息量的榜单和早报合集。\n搜索后如果没有值得看的信息，就不投递资讯，并在运行历史说明没有值得推荐的内容。搜索前兜底与搜索后沉默是独立机制，不要为了数量硬凑。',
+  name: '每日资讯',
+  prompt: '看看过去 24 小时我聊了什么、记了什么，猜猜我可能对什么话题感兴趣。猜不出来就用兜底话题「AI 产品与增长」。\n只把话题关键词发给搜索，不发我的原始记录。搜索近一周的信息，挑 1—3 条值得看的，附链接。\n优先有实质新进展的消息（新产品、新版本、重要动向）；同一件事只留一条；跳过软文和空泛榜单。\n没有值得看的就不推送，说明原因即可。',
   schedule: { type: 'daily', time: '11:00' }, allowNetwork: true, delivery: 'today', enabled: false,
 });
 

@@ -50,7 +50,7 @@
           <div class="welcome-eyebrow"><span class="tiny-star" aria-hidden="true"></span>本机引导 · 非模型回复</div>
           <h2>不必想得很完整，<br>从一句话开始。</h2>
           <p id="welcome-copy" class="welcome-copy">零散的念头、今天的小事，或一个还没想明白的问题，都可以和 Claudia 聊聊。</p>
-          <div class="welcome-note"><svg class="icon"><use href="#i-lock"/></svg><p id="welcome-connection">默认复用 Harness 的模型与凭据，无需复制 Key。Journal、手动记忆与改名无需配置模型。</p></div>
+          <div class="welcome-note"><svg class="icon"><use href="#i-lock"/></svg><p id="welcome-connection">默认复用已配置的模型与凭据，无需复制 Key。Journal、手动记忆与改名无需配置模型。</p></div>
           <div class="prompt-list" aria-label="可编辑的开场提示">
             <button class="prompt-button" type="button" data-prompt="我想梳理一下今天发生的事。"><span>梳理今天的小事</span><svg class="icon"><use href="#i-arrow"/></svg></button>
             <button class="prompt-button" type="button" data-prompt="我有一个还不太成形的想法，想和你聊聊。"><span>聊聊一个新想法</span><svg class="icon"><use href="#i-arrow"/></svg></button>
@@ -181,7 +181,7 @@
                 </div>
                 <fieldset id="routine-days" class="routine-days" hidden disabled><legend>每周几 · 至少选择一天</legend><label><input type="checkbox" value="1">周一</label><label><input type="checkbox" value="2">周二</label><label><input type="checkbox" value="3">周三</label><label><input type="checkbox" value="4">周四</label><label><input type="checkbox" value="5">周五</label><label><input type="checkbox" value="6">周六</label><label><input type="checkbox" value="0">周日</label></fieldset>
                 <label class="check-field routine-check"><input id="routine-network" type="checkbox" aria-describedby="routine-network-help"><span id="routine-network-label">允许联网 · 等待能力报告</span></label>
-                <p id="routine-network-help" class="field-help">仅抽象话题词进入独立联网执行并发给 Harness 搜索提供方，可能额外收费；是否可执行以当前能力为准。</p>
+                <p id="routine-network-help" class="field-help">仅抽象话题词进入独立联网执行并发给搜索提供方，可能额外收费；是否可执行以当前能力为准。</p>
                 <div class="field routine-delivery"><label for="routine-delivery">结果投递到</label><select id="routine-delivery" class="select-input"><option value="today">Today</option><option value="both">Today + 对话独立事件区</option></select><p class="field-help">对话事件仅展示，未加入模型历史。</p></div>
                 <label class="check-field"><input id="routine-enabled" type="checkbox" aria-describedby="routine-sharing-help"><span>保存后启用定时执行</span></label>
                 <p id="routine-sharing-help" class="field-help">启用、修改已启用任务或手动运行均需确认数据共享：有限本地记录与人格设定发给所选模型。联网任务另需确认：模型推导抽象话题，再独立搜索；仅匿名公开网页 GET，无 Cookie、无登录，不允许文件、Shell 或任务管理工具。</p>
@@ -235,8 +235,8 @@
       <section id="settings-panel-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0">
         <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" form="settings-form" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含换行；留空恢复默认名字。修改后点击下方保存设置，不会清空对话或记录。</p></div>
         <section class="host-settings" aria-labelledby="settings-model-title">
-          <h3 id="settings-model-title">模型由 Harness 管理</h3>
-          <p id="settings-assistant-description" class="field-help">Claudia 复用 Harness 的模型与凭据，无需复制 Key，不在此读取或回显密钥。</p>
+          <h3 id="settings-model-title">模型由宿主管理</h3>
+          <p id="settings-assistant-description" class="field-help">Claudia 复用已配置的模型与凭据，无需复制 Key，不在此读取或回显密钥。</p>
           <button id="settings-open-harness" class="secondary-button" type="button" disabled>打开宿主模型设置入口<svg class="icon"><use href="#i-arrow"/></svg></button>
           <p id="settings-host-hint" class="field-help">打开实际宿主后使用模型齿轮；这里不拼接设置深链。</p>
           <p id="settings-host-feedback" class="form-feedback" role="status" hidden></p>
@@ -282,15 +282,15 @@
           <p id="data-directory" class="data-path">尚未读取</p><p id="folder-feedback" class="form-feedback" role="status" hidden></p>
         </section>
         <section class="settings-section" aria-labelledby="harness-runtime-title">
-          <div class="section-heading"><h3 id="harness-runtime-title"><svg class="icon"><use href="#i-terminal"/></svg>Harness runtime</h3><span id="harness-badge" class="quiet-tag">正在读取</span></div>
+          <div class="section-heading"><h3 id="harness-runtime-title"><svg class="icon"><use href="#i-terminal"/></svg>运行状态</h3><span id="harness-badge" class="quiet-tag">正在读取</span></div>
           <dl class="runtime-details"><div><dt>安装状态</dt><dd id="harness-installed">—</dd></div><div><dt>运行版本</dt><dd id="harness-version">—</dd></div><div><dt>模型路由</dt><dd id="model-configured">—</dd></div><div><dt>宿主连接</dt><dd id="model-connected">—</dd></div><div><dt>模型验证</dt><dd id="model-verified">—</dd></div><div><dt>凭据来源</dt><dd id="credential-source">—</dd></div><div><dt>Provider</dt><dd id="model-provider">—</dd></div><div><dt>当前模型</dt><dd id="model-name">—</dd></div></dl>
-          <p class="field-help">宿主连接不代表模型网络或凭据已经验证。模型路由缺失或请求失败时，请回 Harness 的模型设置处理；这里不读取、不显示密钥。</p>
+          <p class="field-help">宿主连接不代表模型网络或凭据已经验证。模型路由缺失或请求失败时，请在模型设置中检查；这里不读取、不显示密钥。</p>
           <p id="runtime-error" class="form-feedback is-error" hidden></p>
           <button id="runtime-settings" class="secondary-button" type="button" aria-controls="settings-panel-general">查看名字与宿主配置<svg class="icon"><use href="#i-arrow"/></svg></button>
         </section>
         <section class="settings-section" aria-labelledby="file-access-title">
           <h3 id="file-access-title">对话文件权限</h3>
-          <p id="file-access-root" class="data-path">正在读取 Harness 目录…</p>
+          <p id="file-access-root" class="data-path">正在读取数据目录…</p>
           <p id="file-access-summary" class="field-help">正在核对对话权限…</p>
         </section>
         <section class="settings-section" aria-labelledby="restart-title">
@@ -360,7 +360,7 @@
               </fieldset>
               <p id="email-account-secret-status" class="field-help" role="status">授权码状态尚未读取。</p>
               <p class="field-help email-server-reference">IMAP imap.qq.com:993 · TLS<br>SMTP smtp.qq.com:465 · TLS</p>
-              <p id="email-account-storage" class="field-help">授权码将保存在本机 Harness 设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。宿主邮件工具之后可使用该账号，宿主页面可能检查账号。本次不主动读信、不发测试邮件，也不开放 Claudia 聊天工具。</p>
+              <p id="email-account-storage" class="field-help">授权码将保存在本机设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。宿主邮件工具之后可使用该账号，宿主页面可能检查账号。本次不主动读信、不发测试邮件，也不开放 Claudia 聊天工具。</p>
               <div class="form-actions email-account-actions"><button id="email-account-cancel" class="text-button" type="button" disabled>取消编辑</button><button id="email-account-save" class="primary-button" type="submit" disabled>保存邮箱配置</button></div>
               <p class="field-help">只保存邮箱配置，不提交其它 Settings 草稿。切换标签保留草稿；刷新不会覆盖草稿或保存基线，重新载入需确认放弃草稿。保存失败后清空授权码，并锁定保存直到读回状态；地址相同或“已有授权码”不能证明上次新授权码保存成功。</p>
             </form>
@@ -387,7 +387,7 @@
         <section class="settings-section" aria-labelledby="plugins-boundary-title">
           <h3 id="plugins-boundary-title">安装、账号连接与调用权限各自独立</h3>
           <p class="field-help">仅 active / loaded 表示宿主已加载，phase 为 null 表示运行阶段未直接观测。账号表单只读写配置，不验证邮件连通性、不授予 Claudia 邮件权限，也不提供安装操作。宿主入口仅供高级管理，可选使用，不填写 token、不猜测深链。</p>
-          <button id="plugins-open-harness" class="secondary-button" type="button" disabled>可选：前往 Harness 管理<svg class="icon"><use href="#i-arrow"/></svg></button>
+          <button id="plugins-open-harness" class="secondary-button" type="button" disabled>可选：前往宿主管理<svg class="icon"><use href="#i-arrow"/></svg></button>
           <p id="plugins-host-feedback" class="form-feedback" role="status" hidden></p>
         </section>
       </section>
