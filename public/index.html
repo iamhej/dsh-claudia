@@ -184,11 +184,11 @@
                 <p id="routine-network-help" class="field-help">仅抽象话题词进入独立联网执行并发给搜索提供方，可能额外收费；是否可执行以当前能力为准。</p>
                 <div class="field routine-delivery"><label for="routine-delivery">结果投递到</label><select id="routine-delivery" class="select-input"><option value="today">Today</option><option value="both">Today + 对话独立事件区</option></select><p class="field-help">对话事件仅展示，未加入模型历史。</p></div>
                 <label class="check-field"><input id="routine-enabled" type="checkbox" aria-describedby="routine-sharing-help"><span>保存后启用定时执行</span></label>
-                <p id="routine-sharing-help" class="field-help">启用、修改已启用任务或手动运行均需确认数据共享：有限本地记录与人格设定发给所选模型。联网任务另需确认：模型推导抽象话题，再独立搜索；仅匿名公开网页 GET，无 Cookie、无登录，不允许文件、Shell 或任务管理工具。</p>
+                <p id="routine-sharing-help" class="field-help">启用或运行时会将近期记录发送给模型，可能产生费用。联网任务会额外搜索公开网页。</p>
               </fieldset>
               <p id="routine-draft-status" class="field-help" role="status">新任务默认停用</p>
               <p id="routine-feedback" class="form-feedback" role="status" hidden></p>
-              <p class="field-help">刷新只更新任务与运行状态，不取消编辑，也不覆盖名称或正文草稿。</p>
+              <p class="field-help">刷新不会覆盖正在编辑的草稿。</p>
               <div class="form-actions routine-form-actions"><button id="routine-recheck" class="text-button" type="button">刷新</button><button id="routine-cancel-edit" class="secondary-button" type="button" hidden>取消编辑</button><button id="routine-rebase" class="secondary-button" type="button" hidden>核对后沿用草稿</button><button id="routine-save" class="primary-button" type="submit" disabled>保存任务</button></div>
             </form>
           </article>
@@ -196,7 +196,7 @@
           <p id="routine-status" class="field-help" role="status"></p>
           <div id="routine-list" class="entry-list"></div>
           <details id="routine-disabled" class="archive-section"><summary id="routine-disabled-summary">已停用 · 0（含默认资讯任务）</summary><div id="routine-disabled-list" class="entry-list"></div></details>
-          <p class="space-footnote">停用任务可按当前能力手动运行，每次单独确认，不改变启用状态。联网任务无本地记录时可用兜底话题。定时执行依赖宿主在线，关机或休眠期间不保证执行。</p>
+          <p class="space-footnote">停用的任务仍可手动运行。定时执行需要服务保持运行。</p>
         </section>
 
         <section id="panel-memories" class="tab-panel" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden>
@@ -230,7 +230,7 @@
       <button id="settings-tab-capabilities" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-capabilities" data-settings-tab="capabilities" tabindex="-1">能力</button>
       <button id="settings-tab-plugins" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-plugins" data-settings-tab="plugins" tabindex="-1">插件</button>
     </nav>
-    <p class="settings-edit-hint field-help">名字、正文与普通开关点击下方保存设置；邮件 Loader 开关和邮箱配置各自独立确认、独立保存，不提交其它草稿。</p>
+    <p class="settings-edit-hint field-help">名字、正文与开关统一保存；邮箱配置单独保存。</p>
     <div id="settings-content" class="settings-content">
       <section id="settings-panel-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0">
         <div class="field"><label for="assistant-name-input">给她起个名字</label><input id="assistant-name-input" form="settings-form" type="text" value="Claudia" maxlength="40" placeholder="Claudia" autocomplete="off" spellcheck="false" aria-describedby="assistant-name-help"><p id="assistant-name-help" class="field-help">最多 40 字符，不含换行；留空恢复默认名字。修改后点击下方保存设置，不会清空对话或记录。</p></div>
@@ -238,16 +238,16 @@
           <h3 id="settings-model-title">模型由宿主管理</h3>
           <p id="settings-assistant-description" class="field-help">Claudia 复用已配置的模型与凭据，无需复制 Key，不在此读取或回显密钥。</p>
           <button id="settings-open-harness" class="secondary-button" type="button" disabled>打开宿主模型设置入口<svg class="icon"><use href="#i-arrow"/></svg></button>
-          <p id="settings-host-hint" class="field-help">打开实际宿主后使用模型齿轮；这里不拼接设置深链。</p>
+          <p id="settings-host-hint" class="field-help" hidden></p>
           <p id="settings-host-feedback" class="form-feedback" role="status" hidden></p>
         </section>
         <div class="context-setting setting-switch"><label for="allow-context">附带个人记录</label><input id="allow-context" type="checkbox" role="switch" aria-describedby="allow-context-help allow-context-status" disabled><p id="allow-context-help" class="field-help">发送对话时，自动向模型附带最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加费用。关闭后只附带手动选择的 Journal。</p><p id="allow-context-status" class="field-help switch-status" role="status">正在读取…</p></div>
       </section>
       <section id="settings-panel-persona" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-persona" tabindex="0" hidden>
         <section class="settings-section" aria-labelledby="profiles-title">
-          <div class="section-heading"><h3 id="profiles-title">人格与上下文文件</h3><button id="profiles-refresh" class="text-button" type="button">刷新版本</button></div>
-          <p class="field-help">soul / user / system 是本地文件，但会作为模型上下文发送给模型服务；不受常规页日志与记忆开关限制。请勿填写密钥或不希望外发的隐私。编辑和保存本身不调用模型。</p>
-          <p class="field-help">这里只编辑正文，技术字段会自动保留；助手名字在「常规」修改，可与正文一起保存。修改后点击下方保存设置，下一轮对话使用。soul / system 可恢复默认，user 保留你自己填写的资料；恢复默认只填入草稿。</p>
+          <div class="section-heading"><h3 id="profiles-title">性格设定</h3><button id="profiles-refresh" class="text-button" type="button">刷新版本</button></div>
+          <p class="field-help">soul · user · system 会在对话时发送给模型。请勿填写密钥或隐私信息。</p>
+          <p class="field-help">修改后点击保存设置，下轮对话生效。soul / system 可恢复默认，user 是你自己的资料。</p>
           <div id="profile-editors"></div>
           <p id="profiles-feedback" class="form-feedback" role="status" hidden></p>
         </section>
@@ -270,7 +270,7 @@
         </section>
         <section class="settings-section" aria-labelledby="background-title">
           <div class="section-heading"><h3 id="background-title">登录后自动启动并在后台运行</h3><span id="background-state" class="quiet-tag">尚未读取</span></div>
-          <p class="field-help">关闭浏览器不会关闭正在运行的服务。此功能用于脱离终端运行，并在登录 macOS 后自动启动；默认不启用，需另行确认系统后台服务。关机或休眠期间不保证任务执行。</p>
+          <p class="field-help">登录 macOS 后自动在后台运行，无需保持终端或浏览器打开。关机或休眠时不执行任务。</p>
           <p id="background-error" class="form-feedback is-error" role="status" hidden></p>
           <button id="background-toggle" class="secondary-button" type="button" disabled>启用后台服务…</button>
           <p id="background-feedback" class="form-feedback" role="status" hidden></p>
@@ -284,7 +284,7 @@
         <section class="settings-section" aria-labelledby="harness-runtime-title">
           <div class="section-heading"><h3 id="harness-runtime-title"><svg class="icon"><use href="#i-terminal"/></svg>运行状态</h3><span id="harness-badge" class="quiet-tag">正在读取</span></div>
           <dl class="runtime-details"><div><dt>安装状态</dt><dd id="harness-installed">—</dd></div><div><dt>运行版本</dt><dd id="harness-version">—</dd></div><div><dt>模型路由</dt><dd id="model-configured">—</dd></div><div><dt>宿主连接</dt><dd id="model-connected">—</dd></div><div><dt>模型验证</dt><dd id="model-verified">—</dd></div><div><dt>凭据来源</dt><dd id="credential-source">—</dd></div><div><dt>Provider</dt><dd id="model-provider">—</dd></div><div><dt>当前模型</dt><dd id="model-name">—</dd></div></dl>
-          <p class="field-help">宿主连接不代表模型网络或凭据已经验证。模型路由缺失或请求失败时，请在模型设置中检查；这里不读取、不显示密钥。</p>
+          <p class="field-help">模型路由或凭据问题请在模型设置中检查。</p>
           <p id="runtime-error" class="form-feedback is-error" hidden></p>
           <button id="runtime-settings" class="secondary-button" type="button" aria-controls="settings-panel-general">查看名字与宿主配置<svg class="icon"><use href="#i-arrow"/></svg></button>
         </section>
@@ -302,7 +302,7 @@
         </section>
         <section class="settings-section" aria-labelledby="logs-title">
           <div class="section-heading"><h3 id="logs-title">运行日志</h3><span id="logs-state" class="quiet-tag">尚未读取</span></div>
-          <p class="field-help">只记录启动、退出、定时任务、后台常驻、采集开关和错误等事件。不写入对话、Journal、待办、记忆、设定正文，也不写入 API key。</p>
+          <p class="field-help">记录运行事件和错误，不包含对话内容或密钥。</p>
           <p id="logs-path" class="data-path">尚未读取</p>
           <div class="restart-row">
             <p id="logs-summary" class="field-help" role="status">正在读取日志状态…</p>
@@ -333,48 +333,48 @@
           <ul id="plugins-list" class="plugins-list" aria-label="当前 profile 的正式 bundle 插件" aria-busy="false"></ul>
         </section>
         <section class="settings-section" aria-labelledby="email-title">
-          <div class="section-heading"><h3 id="email-title">email · 宿主邮件扩展</h3><button id="email-refresh" class="text-button" type="button">刷新邮件状态</button></div>
-          <div class="setting-switch"><label for="email-enabled">启用 email · Loader</label><input id="email-enabled" type="checkbox" disabled aria-describedby="email-help email-status"><p id="email-help" class="field-help">默认关闭，以服务端保存值为准。此开关单独保存、重启生效，不修改下方邮箱账号、不提交其它设置草稿；Claudia 普通聊天仍无邮件权限。</p><p id="email-status" class="field-help switch-status" role="status">尚未读取</p></div>
+          <div class="section-heading"><h3 id="email-title">邮件</h3><button id="email-refresh" class="text-button" type="button">刷新邮件状态</button></div>
+          <div class="setting-switch"><label for="email-enabled">启用邮件功能</label><input id="email-enabled" type="checkbox" disabled aria-describedby="email-help email-status"><p id="email-help" class="field-help">默认关闭，开关单独保存、重启后生效。</p><p id="email-status" class="field-help switch-status" role="status">尚未读取</p></div>
           <p id="email-runtime" class="field-help" role="status"></p>
           <p id="email-message" class="field-help" role="status"></p>
           <p id="email-feedback" class="form-feedback" role="status" hidden></p>
           <div id="email-restart-actions" hidden><button id="email-restart" class="secondary-button" type="button" disabled>重启以应用邮件开关</button><p id="email-restart-hint" class="field-help">不会自动重启；有未保存草稿时先处理草稿。</p></div>
           <section class="email-account" aria-labelledby="email-account-title">
             <div class="section-heading"><h4 id="email-account-title">QQ 邮箱账号</h4><span class="quiet-tag">保存即生效 · 无需重启</span></div>
-            <p id="email-account-help" class="field-help">默认使用 QQ 邮箱，仅支持 qq.com / foxmail.com。可直接在此填写，无需打开宿主页面；账号配置与 Loader 开关各自独立。</p>
+            <p id="email-account-help" class="field-help">仅支持 qq.com / foxmail.com，直接在此填写即可。</p>
             <p id="email-account-status" class="field-help" role="status" aria-live="polite">首次进入插件页后读取账号配置。</p>
             <p id="email-account-message" class="field-help" role="status"></p>
             <article id="email-account-card" class="email-account-card" aria-label="已保存的邮箱配置" hidden>
               <div class="section-heading"><h4 id="email-account-card-title">已保存配置</h4><span class="quiet-tag">连接未验证</span></div>
               <dl class="runtime-details"><div><dt>账号</dt><dd id="email-account-card-user"></dd></div><div><dt>支持收信</dt><dd id="email-account-card-receive"></dd></div><div><dt>支持发信</dt><dd id="email-account-card-send"></dd></div></dl>
-              <p class="field-help">这里只展示已保存配置，不代表已连接邮箱。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。仅支持经审批的纯文本新邮件，不支持附件、回复或转发。</p>
+              <p class="field-help">已保存的配置，不代表已连接邮箱。发信仅限审批后的纯文本新邮件。</p>
             </article>
             <div class="form-actions email-account-actions"><button id="email-account-edit" class="secondary-button" type="button" aria-controls="email-account-form" aria-expanded="false" disabled>编辑</button><button id="email-account-reload" class="text-button" type="button" disabled>重新载入</button></div>
             <form id="email-account-form" autocomplete="off" novalidate aria-describedby="email-account-help email-account-storage" aria-busy="false" hidden>
               <fieldset id="email-account-fields" disabled>
                 <legend class="sr-only">QQ 邮箱与授权码</legend>
                 <div class="field"><label for="email-account-user">完整邮箱地址</label><input id="email-account-user" type="email" inputmode="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="你的账号@qq.com" aria-describedby="email-account-help"></div>
-                <div class="field"><label for="email-account-password">16 位邮箱授权码 · 不是 QQ 登录密码</label><input id="email-account-password" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" placeholder="仅填写新授权码，不会回显已保存的值" aria-describedby="email-account-password-help email-account-secret-status"><p id="email-account-password-help" class="field-help">在 QQ 邮箱开启 IMAP/SMTP 后生成 16 位英文字母授权码，允许前后空白。留空仅在邮箱地址不变且已有授权码时保留原值；换账号必须填写新授权码。</p></div>
+                <div class="field"><label for="email-account-password">16 位邮箱授权码 · 不是 QQ 登录密码</label><input id="email-account-password" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" placeholder="仅填写新授权码，不会回显已保存的值" aria-describedby="email-account-password-help email-account-secret-status"><p id="email-account-password-help" class="field-help">在 QQ 邮箱开启 IMAP/SMTP 后生成 16 位授权码。换账号时需填写新授权码。</p></div>
                 <div class="email-account-permissions" aria-label="邮箱收发权限"><label class="check-field"><input id="email-account-receive" type="checkbox" checked aria-describedby="email-account-permissions-help"><span>支持收信</span></label><label class="check-field"><input id="email-account-send" type="checkbox" aria-describedby="email-account-permissions-help"><span>支持发信</span></label></div>
-                <p id="email-account-permissions-help" class="field-help">新配置默认支持收信、不支持发信；已有配置以兼容版返回值为准。勾选发信并保存会启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。当前兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。</p>
+                <p id="email-account-permissions-help" class="field-help">新配置默认开启收信、关闭发信。发信仅限审批后的纯文本新邮件，不支持附件或转发。</p>
               </fieldset>
               <p id="email-account-secret-status" class="field-help" role="status">授权码状态尚未读取。</p>
               <p class="field-help email-server-reference">IMAP imap.qq.com:993 · TLS<br>SMTP smtp.qq.com:465 · TLS</p>
-              <p id="email-account-storage" class="field-help">授权码将保存在本机设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。宿主邮件工具之后可使用该账号，宿主页面可能检查账号。本次不主动读信、不发测试邮件，也不开放 Claudia 聊天工具。</p>
+              <p id="email-account-storage" class="field-help">授权码保存在本机，不会上传。保存时不会读信或发送测试邮件。</p>
               <div class="form-actions email-account-actions"><button id="email-account-cancel" class="text-button" type="button" disabled>取消编辑</button><button id="email-account-save" class="primary-button" type="submit" disabled>保存邮箱配置</button></div>
-              <p class="field-help">只保存邮箱配置，不提交其它 Settings 草稿。切换标签保留草稿；刷新不会覆盖草稿或保存基线，重新载入需确认放弃草稿。保存失败后清空授权码，并锁定保存直到读回状态；地址相同或“已有授权码”不能证明上次新授权码保存成功。</p>
+              <p class="field-help">只保存邮箱配置，不影响其它设置。保存失败后需重新填写授权码。</p>
             </form>
             <p id="email-account-feedback" class="form-feedback" role="status" aria-live="polite" hidden></p>
             <div class="email-review-actions">
               <div class="field"><label for="email-review-days">查看范围</label><select id="email-review-days" class="select-input" aria-describedby="email-review-help"><option value="7">最近一周</option><option value="30">最近 30 天</option><option value="365">最近一年</option></select></div>
               <div class="field"><label for="email-review-prompt">分析要求</label><textarea id="email-review-prompt" class="note-input email-review-prompt" rows="2" maxlength="500" aria-describedby="email-review-help">帮我看看最近一周的邮件标题和发件人，标出值得查看、疑似广告、欺诈风险或疑似官方的邮件，并简要说明依据。</textarea></div>
               <button id="email-review" class="primary-button" type="button" aria-describedby="email-review-help email-review-feedback" disabled>预览并分析邮件</button>
-              <p id="email-review-help" class="field-help">可修改时间范围和分析要求。确认后会分页读取该范围内全部邮件标题与发件人显示名/地址并发送给当前模型，不设 30 封上限；不读取正文、原始邮件或附件，不改变已读状态。发件人字段只能辅助判断疑似广告、欺诈风险或疑似官方邮件，不能单独验证真实身份。普通对话仍无邮件工具。</p>
+              <p id="email-review-help" class="field-help">只读取邮件标题和发件人，不读正文或附件，不改变已读状态。分析结果仅供参考，不能验证发件人真实身份。</p>
               <p id="email-review-feedback" class="form-feedback" role="status" aria-live="polite" hidden></p>
             </div>
           </section>
           <section id="email-qq-guide" class="email-guide" aria-labelledby="email-qq-title">
-            <h4 id="email-qq-title">授权码帮助与可选高级入口</h4>
+            <h4 id="email-qq-title">授权码帮助</h4>
             <p class="field-help">在 QQ 邮箱的账号与安全设置中开启 IMAP/SMTP 并生成授权码，不要使用 QQ 登录密码；宿主中的发信审批应保持开启。</p>
             <a href="https://help.mail.qq.com/detail/106/985?expand=6" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">QQ 邮箱官方帮助</a>
             <details class="service-details"><summary>高级：可选宿主邮件设置入口</summary>
@@ -385,8 +385,8 @@
           </section>
         </section>
         <section class="settings-section" aria-labelledby="plugins-boundary-title">
-          <h3 id="plugins-boundary-title">安装、账号连接与调用权限各自独立</h3>
-          <p class="field-help">仅 active / loaded 表示宿主已加载，phase 为 null 表示运行阶段未直接观测。账号表单只读写配置，不验证邮件连通性、不授予 Claudia 邮件权限，也不提供安装操作。宿主入口仅供高级管理，可选使用，不填写 token、不猜测深链。</p>
+          <h3 id="plugins-boundary-title">扩展管理</h3>
+          <p class="field-help">账号配置与插件安装各自独立。下方入口仅供高级管理，可选使用。</p>
           <button id="plugins-open-harness" class="secondary-button" type="button" disabled>可选：前往宿主管理<svg class="icon"><use href="#i-arrow"/></svg></button>
           <p id="plugins-host-feedback" class="form-feedback" role="status" hidden></p>
         </section>
