@@ -15,7 +15,7 @@ export const PROFILE_DEFAULTS = Object.freeze({
 });
 const LOCK_FORMAT = 'dsh-claudia-records-lock-v1';
 const activeLocks = new Map();
-export const BOOLEAN_SETTINGS = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
+export const BOOLEAN_SETTINGS = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled', 'profileEnabled'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
 const DIRECTORIES = ['journal', 'reflections', 'conversations', 'migration'];
@@ -86,6 +86,34 @@ function profilePrefix(name, text) {
 }
 function profileBody(name, text) {
   return text ? stripProfileHeader(name, text.slice(profilePrefix(name, text).length)) : '';
+}
+// 画像由本插件写入 user.md 的标记区块；推断段只用于资讯推演，不进对话上下文。
+const sectionMarker = name => `<!-- claudia:${name} -->`;
+function sectionRange(text, name) {
+  const start = text.indexOf(sectionMarker(name));
+  if (start === -1) return null;
+  const close = `<!-- /claudia:${name} -->`;
+  const end = text.indexOf(close, start);
+  return { start, end: end === -1 ? text.length : end + close.length };
+}
+// 对话上下文注入前剥掉推断段；标记被外部改坏时按最保守方式从首个标记起全部丢弃。
+export function stripProfileInference(text) {
+  if (typeof text !== 'string') return '';
+  let result = text;
+  for (;;) {
+    const range = sectionRange(result, 'profile-inference');
+    if (!range) return result;
+    result = result.slice(0, range.start) + result.slice(range.end);
+  }
+}
+// 只替换本插件自己的区块，用户手写正文原样保留；content 为空表示删除该区块。
+export function setProfileSection(text, name, content) {
+  const body = String(content ?? '').trim();
+  const piece = body ? `\n${sectionMarker(name)}\n${body}\n<!-- /claudia:${name} -->\n` : '';
+  let result = typeof text === 'string' ? text : '';
+  const range = sectionRange(result, name);
+  if (range) result = result.slice(0, range.start) + result.slice(range.end);
+  return result.replace(/[\s\uFEFF]*$/, '') + piece;
 }
 function withProfileBody(name, current, body) {
   let prefix = current === null && name === 'soul' ? document('soul', { assistantName: 'Claudia' }, '') : profilePrefix(name, current ?? '');
@@ -723,6 +751,24 @@ export class Records {
       const meta = frontmatter(text), field = meta.values.get(key);
       const line = `${key}: ${value}`;
       return field ? text.slice(0, field.start) + line + text.slice(field.end) : text.slice(0, meta.insert) + line + '\n' + text.slice(meta.insert);
+    });
+  }
+  // 一次保存常同时改多个开关；逐个 setBoolean 会各做一次加锁与全文件重写，开关越多越慢。
+  setBooleans(entries) {
+    const keys = Object.keys(entries);
+    if (!keys.length) return;
+    if (keys.some(key => !BOOLEAN_SETTINGS.includes(key) || typeof entries[key] !== 'boolean')) throw fail('行为配置必须是 bool');
+    this.edit('settings.md', text => {
+      if (text === null) return document('settings', entries, '');
+      this.settings();
+      let next = text;
+      // 每改一行都会改变后面的偏移，因此逐个重新解析 frontmatter。
+      for (const key of keys) {
+        const meta = frontmatter(next), field = meta.values.get(key);
+        const line = `${key}: ${entries[key]}`;
+        next = field ? next.slice(0, field.start) + line + next.slice(field.end) : next.slice(0, meta.insert) + line + '\n' + next.slice(meta.insert);
+      }
+      return next;
     });
   }
   reflections() {

@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { openSync, closeSync, fchmodSync, constants } from 'node:fs';
 import { dirname } from 'node:path';
-import { Records, BOOLEAN_SETTINGS } from './records.mjs';
+import { Records, BOOLEAN_SETTINGS, setProfileSection } from './records.mjs';
 
 const boundedLimit = (limit, fallback) => Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.trunc(limit))) : fallback;
 
@@ -68,6 +68,7 @@ export class Store {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key);
     return row ? JSON.parse(row.value) : fallback;
   }
+  setBooleans(entries) { return this.records.setBooleans(entries); }
   set(key, value) {
     if (key === 'assistantName') return this.records.setAssistantName(value);
     if (BOOLEAN_SETTINGS.includes(key)) return this.records.setBoolean(key, value);
@@ -133,6 +134,41 @@ export class Store {
   memoryCandidates() { return this.records.memoryCandidates(); }
   addMemoryCandidates(entries) { return this.records.addMemoryCandidates(entries); }
   decideCandidate(id, accept) { return this.records.decideCandidate(id, accept); }
+  profileCandidates() {
+    const value = this.get('profileCandidates', []);
+    return Array.isArray(value) ? value.filter(entry => entry && typeof entry === 'object' && typeof entry.id === 'string') : [];
+  }
+  addProfileCandidate({ facts = [], inference = [], window = null }) {
+    const entry = { id: randomUUID(), status: 'pending', createdAt: new Date().toISOString(), window,
+      facts: facts.slice(0, 8), inference: inference.slice(0, 4) };
+    this.set('profileCandidates', [...this.profileCandidates(), entry].slice(-20));
+    return entry;
+  }
+  decideProfileCandidate(id, accept) {
+    if (typeof accept !== 'boolean') throw Object.assign(new Error('确认选项无效'), { status: 400 });
+    const list = this.profileCandidates();
+    const entry = list.find(item => item.id === id);
+    if (!entry) throw Object.assign(new Error('画像建议不存在'), { status: 404 });
+    const status = accept ? 'accepted' : 'rejected';
+    if (entry.status !== 'pending') {
+      if (entry.status !== status) throw Object.assign(new Error('该画像建议已处理，不能再改'), { status: 409 });
+      return entry;
+    }
+    const next = { ...entry, status, decidedAt: new Date().toISOString() };
+    // 先写 user.md 再落状态：写入失败时建议仍是待确认，不会留下已接受却没生效的空状态。
+    if (accept) this.applyProfile(entry.facts, entry.inference);
+    this.set('profileCandidates', list.map(item => item.id === id ? next : item));
+    return next;
+  }
+  // 只改写本插件自己的标记区块：事实段与推断段各一块，用户手写正文原样保留。
+  applyProfile(facts = [], inference = []) {
+    const profiles = this.profiles();
+    const current = String(profiles.user?.body ?? '');
+    const list = value => (Array.isArray(value) ? value : []).filter(line => typeof line === 'string' && line.trim()).map(line => `- ${line.trim()}`).join('\n');
+    let body = setProfileSection(current, 'profile', list(facts));
+    body = setProfileSection(body, 'profile-inference', list(inference));
+    this.saveProfileBody('user', body, profiles.user?.revision ?? null);
+  }
   messages() {
     return this.db.prepare('SELECT m.id,m.role,m.content,m.createdAt,m.status,s.source FROM messages m LEFT JOIN message_sources s ON s.id=m.id WHERE m.sessionId=? ORDER BY m.rowid')
       .all(this.get('sessionId')).map(({ source, ...entry }) => source ? { ...entry, source } : entry);

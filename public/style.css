@@ -459,18 +459,31 @@ svg { flex: 0 0 auto; }
 .routine-source-list { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .routine-source { border-top: 1px solid var(--line); padding-top: 8px; }
 .routine-source .entry-text { font-size: 11px; }
-.message.is-routine-card .message-meta { flex-wrap: wrap; }
-.routine-card-tag { font-size: 10px; color: #6a5fb0; white-space: normal; }
-.routine-stream-card { background: rgba(238,237,254,.62); border-color: rgba(83,74,183,.3); border-radius: 18px; }
-.routine-stream-card > .entry-text { margin: 0; font-size: 12px; }
-.routine-stream-items { display: flex; flex-direction: column; gap: 13px; }
-.routine-stream-item + .routine-stream-item { border-top: 1px solid rgba(83,74,183,.18); padding-top: 12px; }
-.routine-stream-title { font-size: 13px; font-weight: 600; line-height: 1.7; margin: 0 0 5px; overflow-wrap: anywhere; }
-.routine-stream-item .entry-text { margin: 0 0 6px; }
-.message.is-reflection-card .message-meta { flex-wrap: wrap; }
-.reflection-card-tag { font-size: 10px; color: #0f6e56; white-space: normal; }
-.reflection-stream-card { background: rgba(225,245,238,.66); border-color: rgba(15,110,86,.3); border-radius: 18px; }
-.reflection-stream-card > .entry-text { margin: 0; font-size: 12px; }
+/* Chat events inherit the ordinary reply bubble instead of adding colored panels. */
+.message:is(.is-routine-card, .is-reflection-card) .message-meta { flex-wrap: wrap; row-gap: 3px; }
+.message:is(.is-routine-card, .is-reflection-card) .message-name { max-width: 100%; }
+.routine-stream-card { white-space: normal; }
+.routine-stream-card > .entry-text { margin: 0; font-size: inherit; }
+.routine-stream-items { display: flex; flex-direction: column; gap: 17px; }
+.routine-stream-item { min-width: 0; }
+.routine-stream-item + .routine-stream-item { border-top: 1px solid var(--line); padding-top: 16px; }
+.routine-stream-heading { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 5px; }
+.routine-stream-title { flex: 1; min-width: 0; font-size: 1em; font-weight: 600; color: #354e5d; line-height: 1.8; margin: 0; overflow-wrap: anywhere; }
+.routine-stream-item .entry-text { margin: 0; font-size: inherit; line-height: inherit; white-space: pre-wrap; }
+.stream-source-link { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 5px; min-width: 28px; min-height: 28px; padding: 4px; border-radius: 8px; color: #637f8e; text-decoration: none; font-size: 11px; line-height: 1.5; transition: color .15s, background .15s; }
+.stream-source-link .icon { width: 14px; height: 14px; }
+.stream-source-link:hover { color: #355f73; background: rgba(84,121,140,.09); }
+.stream-source-link:focus-visible, .stream-sources > summary:focus-visible, .stream-event-note > summary:focus-visible { outline: 2px solid #588297; outline-offset: 3px; }
+.stream-source-unavailable { font-size: 10px; line-height: 1.7; color: var(--muted); }
+.routine-stream-heading .stream-source-unavailable { max-width: 7em; }
+.stream-sources { margin-top: 15px; border-top: 1px solid var(--line); padding-top: 5px; }
+.stream-sources > summary, .stream-event-note > summary { width: fit-content; max-width: 100%; border-radius: 4px; color: #6c818d; cursor: pointer; font-size: 10px; line-height: 1.7; padding: 6px 0; }
+.stream-sources > summary:hover, .stream-event-note > summary:hover { color: #355f73; }
+.stream-sources > summary::marker, .stream-event-note > summary::marker { color: #9babb4; font-size: 8px; }
+.stream-sources .stream-event-boundary, .stream-event-note > p { font-size: 10px; line-height: 1.8; color: var(--muted); margin: 2px 0 10px; white-space: normal; }
+.stream-sources .routine-source { padding: 10px 0; }
+.stream-sources .routine-source .field-help { margin-top: 0; }
+.stream-event-note { margin: 3px 5px -9px; }
 @media (min-width: 1151px) { .space-header { padding-left: 105px; padding-right: 105px; } }
 @media (max-width: 650px) { .routine-schedule .field > input { font-size: 16px; } }
 @media (max-width: 380px) { .routine-schedule { grid-template-columns: minmax(0, 1fr); } .routine-card-header { flex-wrap: wrap; } }

@@ -10,7 +10,7 @@ import { startServer } from '../server.mjs';
 
 const options = { timeout: 15_000 };
 const keys = ['settings', 'soul', 'user', 'system'];
-const bools = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
+const bools = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled', 'profileEnabled'];
 const legacy = name => `<!-- dsh-claudia ${name} v1：UTF-8；保留元数据及记录边界；正文按原文保存，可外部编辑。 -->`;
 const prefix = '\uFEFF---\r\n# 用户元数据注释\r\nassistantName: "旧名字"\r\ncustom: \'保持原样\'\r\nextra: "{{literal}}"\r\n---\r\n';
 const digest = value => assert.match(value, /^[a-f0-9]{64}$/);
@@ -165,7 +165,7 @@ test('统一改名与 soul 合并一次写入，保留 BOM、CRLF、自定义元
   assert.deepEqual(f.activityCalls, []);
 });
 
-test('五个 bool 一次 settings 写入加两个 profiles，响应和磁盘一致，同值保存不写入不重复应用', options, async t => {
+test('六个 bool 一次 settings 写入加两个 profiles，响应和磁盘一致，同值保存不写入不重复应用', options, async t => {
   const f = await fixture(t), state = await f.state(), writes = watchWrites(t, f.app.store.records);
   const values = Object.fromEntries(bools.map(key => [key, true]));
   const result = ok(await f.batch(payload(state, values, { user: '用户自愿填写', system: '系统正文' })));

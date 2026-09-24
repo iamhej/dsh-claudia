@@ -29,7 +29,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
   const store=new Store(resolve(dataDir,'claudia.sqlite'));
   const runtime=createRuntime(store);
   let active=null,configuring=false,closing=false,drainingUntil=0,actualPort,services={};
-  const boolKeys=['allowContext','activityEnabled','reflectionEnabled','autoUpdateEnabled','memorySuggestionsEnabled'];
+  const boolKeys=['allowContext','activityEnabled','reflectionEnabled','autoUpdateEnabled','memorySuggestionsEnabled','profileEnabled'];
   const busy=()=>!!(active||configuring||Date.now()<drainingUntil||services.maintenance?.status().running);
   const hostBusy=()=>{try{return hasOtherAgents(runtime);}catch{return true;}};
   const preferences=()=>Object.fromEntries(boolKeys.map(key=>[key,store.get(key,false)]));
@@ -160,7 +160,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       if(req.method==='GET'&&path==='/api/state'){
         const end=new Date(),start=new Date(end.getTime()-86400000);
         const page=reflectionPage();
-        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:page.reflections,reflectionTotal:page.total,reflectionHasMore:page.hasMore,memoryCandidates:store.memoryCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false},logs:logger.status(),routines:routineSnapshot(),routineRuns:store.routineRuns(),routineCapability:services.maintenance?.routines?.capability()??ROUTINE_CAPABILITY});
+        return json(res,200,{journal:store.journal(),memories:store.memories(),messages:store.messages(),runtime:await runtime.status(),settings:safeSettings(),settingsEffect:effect(),restart:restartStatus(),sessionId:store.get('sessionId'),todos:store.todos(),profiles:store.profiles(),settingsRevision:store.records.read('settings.md').revision,profileDefaults:PROFILE_DEFAULTS,reflections:page.reflections,reflectionTotal:page.total,reflectionHasMore:page.hasMore,memoryCandidates:store.memoryCandidates(),profileCandidates:store.profileCandidates(),dataDirectory:dataDir,hostUrl:getHostUrl(),maintenance:services.maintenance?.status()||{},activity:services.activity?.status()||{enabled:false,running:false},activitySummary:services.activity?.summary(start.toISOString(),end.toISOString())||{apps:[],seconds:0},background:services.background?.status()||{enabled:false,supported:false},logs:logger.status(),routines:routineSnapshot(),routineRuns:store.routineRuns(),routineCapability:services.maintenance?.routines?.capability()??ROUTINE_CAPABILITY});
       }
       if(req.method==='GET'&&path==='/api/health')return json(res,200,{ok:true,plugin:'dsh-claudia',version:runningVersion,pid:process.pid,home,profile,busy:busy()||hostBusy(),runtime:await runtime.status()});
       if(req.method==='POST'&&path==='/api/restart'){
@@ -228,6 +228,16 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       }
       if(req.method==='POST'&&path.startsWith('/api/reflections/')){const data=await readBody(req),entry=store.reflections().find(e=>e.id===path.split('/').pop());if(!entry)return json(res,404,{error:'回顾不存在'});return json(res,200,store.saveReflection({...entry,text:requiredText(data.text,12000)},data.revision));}
       if(req.method==='POST'&&path.startsWith('/api/memory-candidates/')){const data=await readBody(req);if(typeof data.accept!=='boolean')return json(res,400,{error:'确认选项无效'});return json(res,200,store.decideCandidate(path.split('/').pop(),data.accept));}
+      if(req.method==='POST'&&path.startsWith('/api/profile-candidates/')){const data=await readBody(req);if(typeof data.accept!=='boolean')return json(res,400,{error:'确认选项无效'});return json(res,200,store.decideProfileCandidate(path.split('/').pop(),data.accept));}
+      if(req.method==='POST'&&path==='/api/profile/run'){
+        const data=await readBody(req);
+        if(Object.keys(data).sort().join(',')!=='confirmDataSharing,requestId'||data.confirmDataSharing!==true||typeof data.requestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(data.requestId))return json(res,400,{error:'请确认记录将发送给模型，并提供有效的本次请求标识'});
+        if(busy())return json(res,409,{error:'请等待当前任务结束'});
+        if(!store.get('profileEnabled',false))return json(res,400,{error:'请先保存并开启每周画像'});
+        if(!services.maintenance)return json(res,503,{error:'每周画像尚未就绪'});
+        void services.maintenance.runProfile(new Date(),{requestId:data.requestId}).catch(()=>logger.warn('profile.manual.failed',{}));
+        return json(res,202,{accepted:true});
+      }
       if(req.method==='GET'&&path==='/api/logs'){
         // 只读自己的日志目录，不接受任何外部路径或文件名参数。
         const requested=Number(new URL(req.url,origins[0]).searchParams.get('limit'));
@@ -273,7 +283,10 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
         try{
           const oldActivity=store.get('activityEnabled',false);
           if(data.assistantName!==undefined&&name!==store.get('assistantName','Claudia'))store.set('assistantName',name);
-          for(const key of boolKeys)if(data[key]!==undefined&&data[key]!==store.get(key,false))store.set(key,data[key]);
+          // 多个开关一次写入：每次 edit 都要加锁并重写整个 settings.md。
+          const changed={};
+          for(const key of boolKeys)if(data[key]!==undefined&&data[key]!==store.get(key,false))changed[key]=data[key];
+          if(Object.keys(changed).length)store.setBooleans(changed);
           if(data.activityEnabled!==undefined){
             store.set('reflectionSources',['journal','todos','messages',...(data.activityEnabled?['activity']:[])]);
             if(oldActivity!==data.activityEnabled||services.activity?.status().error||activityError)applyActivity(data.activityEnabled);

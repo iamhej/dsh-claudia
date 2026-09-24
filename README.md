@@ -1,12 +1,21 @@
 # dsh-claudia
 
-> **v0.3.9：修掉资讯模型偶尔跳过搜索、直接作答导致整期失败的问题。** 现在会明确要求它先搜索并最多补一次；「必须先搜索」也提到了提示词最前面。校验与外发内容都没有变化。
+> **v0.4.0：新增每周画像（默认关闭），只从你自己的 Journal、Todo 和你发出去的消息里归纳，推断段不进对话上下文；资讯话题推演不出结果时改用兜底话题，不再让模型凭空造句。** 另外修掉设置页漏保存画像开关、手动运行画像丢请求 ID，以及一次保存多个开关重复重写 `settings.md` 的问题。
 
 **让个人 AI 助手不止是一个聊天框。**
 
 DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、Routine 和记忆。能力及插件管理入口位于设置。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
 
-版本 **0.3.9**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+版本 **0.4.0**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+
+## 0.4.0 更新
+
+- **新增「每周生成我的画像」，默认关闭。** 设置「自动化」页新增独立开关。开启后每周一次（本机历法，周一为界），从你自己的 Journal、待办和你发出去的消息里归纳一份画像，分两段写：**事实段**最多 8 条、每条 120 字，要求有原文依据；**推断段**最多 4 条、每条 120 字，明确标为推测。生成后先作为候选交给你确认，**接受才写入 `user.md`**，拒绝或忽略都不写入。同一周不重复生成，内容没变化不再反复投递；完全没有材料（没有 Journal、没有待办、也没有你发出的消息）时直接跳过、不调用模型。生成后关掉开关，未确认的候选会被丢弃。会向 Harness 当前模型发送有限条摘录，可能产生模型费用。
+- **画像材料只认你自己的产物。** 每日回顾和助手回复都是模型生成的，不算你的信号，**不参与画像**；跨会话只取你发出的消息（窗口 30 天、最多 200 条内筛选）。每日资讯的话题推演材料同样换血：**不再使用每日回顾与助手回复**，只用 Journal、待办和你发出的消息。
+- **推断段不进对话上下文。** 两段都写进 `user.md` 的标记区块（`<!-- claudia:profile -->` 与 `<!-- claudia:profile-inference -->`）：事实段照常参与对话，推断段在注入画像时被剔除，**只用于每日资讯的话题推演**。你在 `user.md` 手写的正文完整保留；重复接受只替换自己的区块，不会累积。
+- **资讯话题推演现在有兜底。** 之前推演不出话题时，模型会自己凭空造一个主题。现在推演失败或没有输出时固定使用兜底话题「前沿 AI Native app 增长资讯」，仍然只影响搜索查询词，不改变搜索次数、网页读取预算与挑选校验。
+- 修掉两个服务端问题：设置页保存开关时漏掉新加的「每周生成我的画像」（点了保存不生效）；手动运行画像时内部请求 ID 传参错误，该次运行无法被前端跟踪。
+- 多个开关改为一次写入 `settings.md`：原先每个开关各触发一次加锁和整个文件重写，一次保存六个开关等于重写六遍。
 
 ## 0.3.9 更新
 
@@ -122,11 +131,11 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 
 ## 安装与启动
 
-从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.3.6.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
+从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.4.0.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
 
 ```sh
 dsh plugin --profile web add /absolute/path/to/dsh-email-0.11.0-claudia.2.tgz --ignore-scripts
-dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.3.6.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.4.0.tgz --ignore-scripts
 ```
 
 安装邮件兼容包不会自动授权 Claudia 普通聊天读取邮箱。请启动后在「设置 → 插件」中确认启用邮件 Bundle、配置 QQ 邮箱，并在每次邮件分析前查看数据共享预览。已有其它 dsh-email 版本时请先备份 Harness profile 和设置。
@@ -152,7 +161,7 @@ node "$HOME/.dsh/profiles/web/node_modules/dsh-claudia/bin/claudia.mjs" start \
 从源码或 fork 安装可固定标签，严格复现时改用完整提交号：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.3.6" --ignore-scripts
+dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.4.0" --ignore-scripts
 ```
 
 尚未发布 npm registry，不要假设按包名在线安装已可用。peerDependencies 警告可能出现，实际由宿主模块解析回退提供；不要仅因警告而另装第二份 Harness。
@@ -166,7 +175,7 @@ claudia/
   soul.md                  人格，frontmatter 中 assistantName 是昵称唯一来源
   user.md                  用户确认的个人背景
   system.md                交互约定，不是权限或宿主系统配置
-  settings.md              五项行为开关，不含 API key
+  settings.md              六项行为开关，不含 API key
   todo.md                  待办、完成与忽略状态
   memory.md                确认记忆及待审核候选
   journal/*.md             按稳定 ID 保存每条记录，内含时间元数据
@@ -206,6 +215,8 @@ Apple DeviceActivity 的隐私隔离不提供适合本插件读取并导出全�
 关闭/睡眠错过时间后，恢复时补最近一期，不逐日无限追赶。实际时间范围写入文件；夏令时仍按 UTC 24 小时回溯。已有回顾不自动覆盖，包括你手动修改的版本。无数据明确说明，不杜撰活动或情绪，不给一天打分；失败有状态与有限重试。此功能不会唤醒关机的电脑。
 
 **记忆建议**开启后，从最近有限条用户对话提取有原文依据的事实/偏好，最多 5 条候选，由你接受或拒绝。不会自动改写 soul/user/system。确认记忆可在允许附带上下文时供对话使用；当前是有界直接选取，不是向量语义记忆库。
+
+**每周画像**开启后，每周一次从 Journal、待办和你发出去的消息里归纳事实段与推断段，作为候选由你接受或拒绝；接受的画像写入 `user.md` 的标记区块，其中推断段不参与对话、只用于每日资讯的话题推演。每日回顾与助手回复不参与画像。**推断段是推测，不是已确认事实**，请勿把它当作 Claudia 对你的判断依据。同样可能产生模型费用。
 
 ## 保持 Claudia 更新
 

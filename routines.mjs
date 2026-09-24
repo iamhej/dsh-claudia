@@ -37,13 +37,15 @@ export class Routines {
     if (job.allowNetwork && !this.capability().network) throw fail('联网能力尚未接入，不会把资讯任务当成本地摘要运行', 409);
     return job;
   }
-  collect(window) {
+  collect(window, network = false) {
     const raw = { journal: this.store.journal(), todo: this.store.todos(), reflection: this.store.reflections(),
       message: this.store.recentMessages('1900-01-01T00:00:00.000Z', '9999-01-01T00:00:00.000Z', 100) };
     // 全部本地集合 + 最新消息参与变化检测；只把窗口内有界摘录发送给模型。
     const fingerprint = hash(raw), sources = [];
-    for (const kind of ['journal', 'todo', 'message', 'reflection']) {
-      const entries = kind === 'message' ? this.store.recentMessages(window.start, window.end, 40) : raw[kind];
+    // 联网推演只认用户自己写的材料：每日回顾与助手回复都是模型产物，不能当作用户兴趣的证据。
+    const kinds = network ? ['journal', 'todo', 'message'] : ['journal', 'todo', 'message', 'reflection'];
+    for (const kind of kinds) {
+      const entries = kind === 'message' ? this.store.recentMessages(window.start, window.end, 40).filter(e => !network || e.role === 'user') : raw[kind];
       const timeOf = e => kind === 'journal' ? e.occurredAt : kind === 'todo' ? e.updatedAt || e.createdAt : e.createdAt;
       const recent = entries.filter(e => { const t = Date.parse(timeOf(e)); return t >= Date.parse(window.start) && t < Date.parse(window.end); })
         .sort((a, b) => Date.parse(timeOf(b)) - Date.parse(timeOf(a))).slice(0, 12);
@@ -54,6 +56,18 @@ export class Routines {
       }
     }
     return { fingerprint, sources };
+  }
+  // 长期画像与已确认记忆是用户审定过的资料，慢速变化。
+  // 每次运行只读一次：collect() 会被变化检测反复调用，放进去会让每次检查都重新读文件。
+  profileSources() {
+    const sources = [], now = new Date().toISOString();
+    const body = String(this.store.profiles().user?.body ?? '').trim();
+    if (body) sources.push({ id: 'user', sourceId: 'profile:user', kind: 'profile', text: body.slice(0, 2000), time: now });
+    for (const entry of this.store.memories().slice(-20)) {
+      const text = String(entry.text ?? '').trim();
+      if (text) sources.push({ id: String(entry.id), sourceId: `memory:${entry.id}`, kind: 'memory', text: text.slice(0, 600), time: now });
+    }
+    return sources;
   }
   changed(active = this.active) {
     if (!active) return false;
@@ -102,7 +116,7 @@ export class Routines {
     };
     try {
       if (this.changed(active)) throw fail('任务在启动前已变化，未执行', 409);
-      const input = this.collect(window);
+      const input = this.collect(window, job.allowNetwork);
       if (!input.sources.length && !job.allowNetwork) { finish({ status: 'no-data', reason: '过去 24 小时没有可用记录，未调用模型，也未投递' }); return true; }
       watcher = setInterval(() => this.cancelChanged(), 500); watcher.unref();
       timeout = setTimeout(() => {
@@ -112,12 +126,24 @@ export class Routines {
       }, job.allowNetwork ? 300000 : this.timeoutMs); timeout.unref();
       if (job.allowNetwork) {
         const assertActive = () => {
-          if (this.collect(window).fingerprint !== input.fingerprint) this.cancel('本地记录已变化，停止联网执行');
+          if (this.collect(window, true).fingerprint !== input.fingerprint) this.cancel('本地记录已变化，停止联网执行');
           if (active.cancelled || this.changed(active)) throw fail(active.cancelled || '任务已变化，停止联网执行');
         };
-        const output = await networkRoutine({ job, window, input, runtime: this.runtime, news: this.news, active, assertActive, fetchPage: this.fetchPage });
+        // 去重依据：本任务最近已成功投递条目的标题与链接；正文与依据不带入联网阶段。
+        // 当前这次运行状态仍是 running，不会被计入。
+        const history = this.store.routineRuns(job.id, 10)
+          .filter(entry => entry.status === 'success' && Array.isArray(entry.items))
+          .flatMap(entry => entry.items.map(item => ({ title: item.title, url: item.url })))
+          .filter(item => typeof item.title === 'string' && item.title.trim())
+          .slice(0, 24);
+        // 画像只在启动时取一次，随本次运行的资料一起交给推演；指纹仍只按本地记录变化检测。
+        const sources = [...input.sources];
+        for (const source of this.profileSources()) {
+          if (encode([...sources, source]).length <= 16000) sources.push(source);
+        }
+        const output = await networkRoutine({ job, window, input: { ...input, sources }, history, runtime: this.runtime, news: this.news, active, assertActive, fetchPage: this.fetchPage });
         assertActive();
-        if (this.collect(window).fingerprint !== input.fingerprint) finish({ status: 'cancelled', reason: '生成期间本地记录发生变化，本次未投递' });
+        if (this.collect(window, true).fingerprint !== input.fingerprint) finish({ status: 'cancelled', reason: '生成期间本地记录发生变化，本次未投递' });
         else finish({ ...output, deliveredAt: output.status === 'success' ? new Date().toISOString() : null });
         return true;
       }

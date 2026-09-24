@@ -203,6 +203,7 @@
           <div class="page-intro"><p class="eyebrow">MEMORY / 关于你</p><h2>记住什么，由你决定。</h2><p>偏好、习惯、想被理解的部分，都可以慢慢补充。</p></div>
           <div class="soft-notice"><svg class="icon"><use href="#i-lock"/></svg><div><strong id="memory-suggestions-status">记忆候选默认关闭</strong><p>自动功能只生成候选，不自动写入长期记忆。每条候选都需要你亲自接受；本地保存不等于立即发送给模型。</p></div></div>
           <article class="glass-card"><div class="section-heading"><h3>等待你确认的候选</h3><span id="memory-candidate-count" class="quiet-tag">尚未读取</span></div><div id="memory-candidate-list" class="entry-list"></div><p id="memory-candidate-feedback" class="form-feedback" role="status" hidden></p></article>
+          <article class="glass-card"><div class="section-heading"><h3>等待你确认的画像</h3><span id="profile-candidate-count" class="quiet-tag">尚未读取</span></div><div id="profile-candidate-list" class="entry-list"></div><p class="field-help">每周一次，依据近 30 天你写的 Journal、Todo 和你发出的消息生成。接受后：事实与偏好写入 user 资料；推测部分只用于资讯推演，不会进入对话上下文。</p><p id="profile-candidate-feedback" class="form-feedback" role="status" hidden></p></article>
           <article class="glass-card entry-card">
             <form id="memory-form">
               <label id="memory-input-label" class="field-label" for="memory-input">想让 Claudia 记住的一件事</label>
@@ -262,6 +263,7 @@
           <p class="field-help">补跑最近本地 05:00 一期，已有结果不重复生成；需要保存并启用每日回顾。不改变统计窗口或自动开关，不提交其它设置草稿。</p>
           <p id="settings-reflection-run-feedback" class="form-feedback" role="status" hidden></p>
           <details id="settings-reflection-details" class="service-details"><summary>每日回顾执行状态</summary><p id="settings-reflection-status" class="field-help" role="status"></p><button id="settings-reflection-refresh" class="text-button" type="button">刷新执行状态</button></details>
+          <div class="setting-switch"><label for="profile-enabled">每周画像</label><input id="profile-enabled" type="checkbox" role="switch" aria-describedby="profile-enabled-help profile-enabled-status" disabled><p id="profile-enabled-help" class="field-help">每周一次，依据近 30 天的 Journal、Todo 和你发出的消息生成一份画像草稿，会产生费用。只在「记忆」里生成待确认建议，不会自动改写 user 资料。</p><p id="profile-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
           <div class="setting-switch"><label for="auto-update-enabled">自动更新</label><input id="auto-update-enabled" type="checkbox" role="switch" aria-describedby="auto-update-enabled-help auto-update-enabled-status" disabled><p id="auto-update-enabled-help" class="field-help">每天本地 06:00 检查并安装稳定版，可能重启服务、短暂断连。更新应保留已有数据，结果以服务返回状态为准。</p><p id="auto-update-enabled-status" class="field-help switch-status" role="status">正在读取…</p></div>
           <p class="field-help">服务运行时会按计划执行，无需保持浏览器打开。</p>
           <details id="maintenance-details" class="service-details" hidden><summary>查看最近结果与异常</summary><p id="maintenance-status" class="field-help" role="status"></p></details>

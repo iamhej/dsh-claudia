@@ -11,7 +11,7 @@ import { startServer } from '../server.mjs';
 const packageVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 const testOptions = { timeout: 15_000 };
 const settingsDeadline = 1_500;
-const boolKeys = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled'];
+const boolKeys = ['allowContext', 'activityEnabled', 'reflectionEnabled', 'autoUpdateEnabled', 'memorySuggestionsEnabled', 'profileEnabled'];
 
 // 只导入 server 及其本地存储依赖；不加载真实 runtime、activity、restart 或宿主凭据。
 async function fixture(t, { withRestart = true } = {}) {

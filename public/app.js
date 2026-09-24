@@ -7,11 +7,12 @@
   const profileNames = ['soul', 'user', 'system'];
   const settingFields = {
     allowContext: 'allow-context', activityEnabled: 'activity-enabled', reflectionEnabled: 'reflection-enabled',
-    autoUpdateEnabled: 'auto-update-enabled', memorySuggestionsEnabled: 'memory-suggestions-enabled'
+    autoUpdateEnabled: 'auto-update-enabled', memorySuggestionsEnabled: 'memory-suggestions-enabled',
+    profileEnabled: 'profile-enabled'
   };
   const defaultAssistantName = 'Claudia';
   const state = {
-    journal: [], memories: [], messages: [], todos: [], reflections: [], memoryCandidates: [], profiles: {}, runtime: {},
+    journal: [], memories: [], messages: [], todos: [], reflections: [], memoryCandidates: [], profileCandidates: [], profiles: {}, runtime: {},
     settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: '',
     dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
     background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
@@ -249,6 +250,10 @@
         if (!['user', 'assistant', 'system'].includes(item.role) || typeof item.content !== 'string') continue;
         Object.assign(entry, { role: item.role, content: item.content, status: asText(item.status) });
         if (item.source === 'email-review' || emailReviewMessageIds.has(entry.id)) entry.source = 'email-review';
+      } else if (type === 'profileCandidates') {
+        Object.assign(entry, { status: asText(item.status), window: asText(item.window?.end),
+          facts: Array.isArray(item.facts) ? item.facts.map(asText).filter(Boolean) : [],
+          inference: Array.isArray(item.inference) ? item.inference.map(asText).filter(Boolean) : [] });
       } else {
         if (typeof item.text !== 'string') continue;
         entry.text = item.text;
@@ -319,7 +324,7 @@
     applySettingsSnapshot(payload);
     state.features = {
       todos: Array.isArray(payload.todos), reflections: Array.isArray(payload.reflections),
-      memoryCandidates: Array.isArray(payload.memoryCandidates), automation: Boolean(payload.maintenance),
+      memoryCandidates: Array.isArray(payload.memoryCandidates), profileCandidates: Array.isArray(payload.profileCandidates), automation: Boolean(payload.maintenance),
       background: Boolean(payload.background), logs: Boolean(payload.logs)
     };
     applyRoutineState(payload);
@@ -329,6 +334,7 @@
     state.reflectionHasMore = payload.reflectionHasMore === true;
     syncReflections();
     state.memoryCandidates = entriesFrom(payload.memoryCandidates, 'memoryCandidates');
+    state.profileCandidates = entriesFrom(payload.profileCandidates, 'profileCandidates');
     for (const [id, draft] of reflectionDrafts) syncDraft(draft, state.reflections.find((entry) => entry.id === id));
     state.dataDirectory = asText(payload.dataDirectory);
     state.hostUrl = asText(payload.hostUrl);
@@ -857,8 +863,32 @@
     return link;
   }
 
-  function buildRoutineSources(runId) {
-    const details = element('details', 'routine-sources');
+  // Compact links are only used by chat event cards; the right-hand history stays unchanged.
+  function streamSourceLink(value, title = '', showLabel = false) {
+    const href = safeRoutineUrl(value);
+    if (!href) return element('span', 'stream-source-unavailable', '原文链接不可用');
+    const link = element('a', 'stream-source-link');
+    const host = new URL(href).hostname;
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.referrerPolicy = 'no-referrer';
+    link.title = `查看原文 · ${host}（新标签页）`;
+    link.setAttribute('aria-label', `查看原文：${title || host}（新标签页打开）`);
+    link.append(icon('link'));
+    if (showLabel) link.append(element('span', '', '原文'));
+    return link;
+  }
+
+  function streamEventNote() {
+    const details = element('details', 'stream-event-note');
+    details.append(element('summary', '', '关于这条观察'),
+      element('p', '', '这是独立生成的观察，未进入模型历史；继续聊天时不会自动带上这段内容。'));
+    return details;
+  }
+
+  function buildRoutineSources(runId, compact = false) {
+    const details = element('details', `routine-sources${compact ? ' stream-sources' : ''}`);
     const sources = element('div', 'routine-source-list');
     const retry = element('button', 'text-button', '重新读取依据与来源');
     retry.type = 'button';
@@ -881,7 +911,7 @@
           item.append(element('p', 'field-help', `${Object.hasOwn(kinds, source.kind) ? kinds[source.kind] : '本地记录'} · ${dateLabel(source.time, true)} · ${asId(source.sourceId) || asId(source.id)}`));
           if (source.kind === 'web') item.append(element('h5', '', asText(source.title) || '未提供标题'));
           if (source.text) item.append(element('p', 'entry-text', asText(source.text)));
-          if (source.kind === 'web') item.append(routineSourceLink(source.url));
+          if (source.kind === 'web') item.append(compact ? streamSourceLink(source.url, asText(source.title), true) : routineSourceLink(source.url));
           sources.append(item);
         }
         if (!sources.childElementCount) sources.append(element('p', 'field-help', '没有保存的依据与来源。'));
@@ -892,7 +922,9 @@
         retry.hidden = false;
       } finally { loading = false; }
     }
-    details.append(element('summary', '', '查看依据与来源'), sources, retry);
+    details.append(element('summary', '', compact ? '依据与来源' : '查看依据与来源'));
+    if (compact) details.append(element('p', 'stream-event-boundary', '这是一条独立推送，未进入模型历史；继续聊天时不会自动带上这段内容。'));
+    details.append(sources, retry);
     details.addEventListener('toggle', () => { if (details.open) void load(); });
     retry.addEventListener('click', () => void load());
     return details;
@@ -1357,6 +1389,41 @@
       card.append(element('p', 'entry-text', entry.text), element('p', 'field-help', `来源：${entry.source || '未提供'}${ready ? '' : ` · 状态：${entry.status}`}`), actions);
       list.append(card);
     }
+    renderProfileCandidates();
+  }
+
+  function renderProfileCandidates() {
+    const entries = state.profileCandidates.filter((entry) => !['accepted', 'rejected'].includes(entry.status));
+    $('profile-candidate-count').textContent = `${entries.length} 条待查看`;
+    const list = $('profile-candidate-list');
+    list.replaceChildren();
+    if (!hasState) { list.append(loadingState('memory')); return; }
+    if (!entries.length) { list.append(emptyState('没有待确认画像', '开启「每周画像」后每周生成一份草稿；只有你接受后才会写入 user 资料。', 'memory')); return; }
+    for (const entry of entries) {
+      const card = element('div', 'candidate-entry');
+      const section = (title, items) => {
+        if (!items.length) return;
+        card.append(element('p', 'field-help', title));
+        const items$ = element('ul', 'entry-list');
+        for (const line of items) items$.append(element('li', 'entry-text', line));
+        card.append(items$);
+      };
+      section('事实与偏好 · 依据记录，接受后写入 user 资料', entry.facts);
+      section('推测 · 只用于资讯推演，不进对话上下文', entry.inference);
+      const actions = element('div', 'form-actions');
+      for (const [label, action, className] of [['忽略', 'profile-candidate-reject', 'text-button'], ['接受并写入 user 资料', 'profile-candidate-accept', 'secondary-button']]) {
+        const button = actionButton(label, action, entry.id, className);
+        button.disabled = !canMutate() || pending.has(`profile-candidate:${entry.id}`);
+        actions.append(button);
+      }
+      card.append(actions);
+      list.append(card);
+    }
+  }
+
+  function decideProfileCandidate(id, accept) {
+    void mutate(`profile-candidate:${id}`, `/api/profile-candidates/${encodeURIComponent(id)}`, { accept }, 'profile-candidate-feedback',
+      accept ? '已写入 user 资料：事实段进入对话上下文，推测段只用于资讯推演。' : '已忽略这条画像，未写入 user 资料。');
   }
 
   function taskStatus(task) {
@@ -1490,17 +1557,20 @@
     else target.textContent = text;
   }
 
+  // 已投递到对话流的卡片一直留在流里，按时间插在消息之间，靠后续新消息与新卡片自然往上顶。
+  // 不再按“仅今天”过滤：跨天不应让已经出现过的卡片凭空消失。
+  // 数量受服务端上限约束（运行记录最多 20 条、回顾按页返回），不会无限增长。
   function streamCards() {
-    const today = localDateKey(new Date());
     const cards = [];
     for (const run of state.routineRuns) {
       if (run.status !== 'success' || run.delivery !== 'both' || !run.deliveredAt) continue;
-      if (localDateKey(run.deliveredAt) !== today) continue;
-      cards.push({ at: dateValue(run.deliveredAt)?.getTime() || 0, kind: 'routine', run });
+      const at = dateValue(run.deliveredAt);
+      if (!at) continue;
+      cards.push({ at: at.getTime(), kind: 'routine', run });
     }
     for (const entry of state.reflections) {
       const at = dateValue(entry.end || entry.createdAt);
-      if (!at || localDateKey(entry.end || entry.createdAt) !== today) continue;
+      if (!at) continue;
       cards.push({ at: at.getTime(), kind: 'reflection', reflection: entry });
     }
     return cards.sort((a, b) => a.at - b.at);
@@ -1512,7 +1582,6 @@
     const article = element('article', 'message is-routine-card');
     const meta = element('div', 'message-meta');
     meta.append(element('span', 'display-name message-name', asText(run.jobName) || 'Routine'));
-    meta.append(element('span', 'routine-card-tag', '独立事件 · 未进入模型历史'));
     if (dateValue(run.deliveredAt)) {
       const time = element('time', '', dateLabel(run.deliveredAt));
       time.dateTime = run.deliveredAt;
@@ -1524,17 +1593,20 @@
       const list = element('div', 'routine-stream-items');
       for (const item of items) {
         const entry = element('div', 'routine-stream-item');
-        entry.append(element('p', 'routine-stream-title', asText(item.title) || '未提供标题'));
+        const title = asText(item.title) || '未提供标题';
+        const heading = element('div', 'routine-stream-heading');
+        heading.append(element('h3', 'routine-stream-title', title));
+        if (item.url) heading.append(streamSourceLink(item.url, title));
+        entry.append(heading);
         const body = asText(item.summary);
         if (body) entry.append(element('p', 'entry-text', body));
-        if (item.url) entry.append(routineSourceLink(item.url));
         list.append(entry);
       }
       bubble.append(list);
     } else {
       bubble.append(element('p', 'entry-text', asText(run.summary) || '本次没有摘要内容。'));
     }
-    bubble.append(buildRoutineSources(asId(run.id)));
+    bubble.append(buildRoutineSources(asId(run.id), true));
     article.append(meta, bubble);
     return article;
   }
@@ -1543,15 +1615,14 @@
     const article = element('article', 'message is-reflection-card');
     const meta = element('div', 'message-meta');
     meta.append(element('span', 'display-name message-name', `${displayName()} 的观察`));
-    meta.append(element('span', 'reflection-card-tag', '独立事件 · 未进入模型历史'));
     if (dateValue(entry.end || entry.createdAt)) {
       const time = element('time', '', dateLabel(entry.end || entry.createdAt, true));
       time.dateTime = asText(entry.end || entry.createdAt);
       meta.append(time);
     }
     const bubble = element('div', 'message-bubble reflection-stream-card');
-    bubble.append(element('p', 'entry-text', asText(entry.text) || '这一期没有留下正文。'));
-    article.append(meta, bubble);
+    renderAssistantContent(bubble, asText(entry.text) || '这一期没有留下正文。');
+    article.append(meta, bubble, streamEventNote());
     return article;
   }
 
@@ -2272,7 +2343,7 @@
 
   function renderSettingsEffect() {
     const receipt = settingsReceipt;
-    const labels = { assistantName: '名字', allowContext: '附带个人记录', activityEnabled: '应用使用时长', reflectionEnabled: '每日回顾', autoUpdateEnabled: '自动更新', memorySuggestionsEnabled: '记忆候选', settings: '设置', batch: '批量保存' };
+    const labels = { assistantName: '名字', allowContext: '附带个人记录', activityEnabled: '应用使用时长', reflectionEnabled: '每日回顾', autoUpdateEnabled: '自动更新', memorySuggestionsEnabled: '记忆候选', profileEnabled: '每周画像', settings: '设置', batch: '批量保存' };
     const parts = [];
     let isError = false;
     if (receipt?.sent) {
@@ -2300,7 +2371,7 @@
       const status = $(`${id}-status`);
       input.checked = settingsDraft?.[field] === true;
       const dirty = Object.hasOwn(changes, field);
-      const task = state.maintenance[{ reflectionEnabled: 'reflection', autoUpdateEnabled: 'update', memorySuggestionsEnabled: 'memory' }[field]];
+      const task = state.maintenance[{ reflectionEnabled: 'reflection', autoUpdateEnabled: 'update', memorySuggestionsEnabled: 'memory', profileEnabled: 'profile' }[field]];
       const error = field === 'activityEnabled' ? state.activity.state === 'error' : state.settings[field] && (task?.error || task?.lastError || task?.state === 'error');
       const preparing = field === 'activityEnabled' && ['starting', 'stopping'].includes(state.activity.state);
       let label = state.settings[field] ? '已开启' : '已关闭';
@@ -2709,6 +2780,7 @@
     if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给模型生成回顾，会产生费用。');
     if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启 Harness、短暂断开连接。');
     if (settings.memorySuggestionsEnabled) warnings.push('允许模型处理内容并生成记忆候选，可能产生费用；不会自动写入长期记忆，仍需你逐条接受。');
+    if (settings.profileEnabled) warnings.push('允许模型处理近 30 天的 Journal、Todo 与你发出的消息并生成画像草稿，可能产生费用；不会自动改写 user 资料，仍需你逐条接受。');
     if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字及 soul / user / system 正文会在后续对话中作为上下文发送给模型服务，可能增加费用，不受“附带个人记录”开关限制。请勿填写密钥或不愿外发的隐私。保存正文和名字本身不调用模型。');
     const returnFocus = document.activeElement;
     settingsSaving = true;
@@ -3265,6 +3337,8 @@
     else if (target.dataset.action === 'todo-restore') changeTodo(id, 'todo');
     else if (target.dataset.action === 'candidate-accept') decideCandidate(id, true);
     else if (target.dataset.action === 'candidate-reject') decideCandidate(id, false);
+    else if (target.dataset.action === 'profile-candidate-accept') decideProfileCandidate(id, true);
+    else if (target.dataset.action === 'profile-candidate-reject') decideProfileCandidate(id, false);
   });
 
   $('runtime-button').addEventListener('click', () => openSettings('maintenance'));

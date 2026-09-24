@@ -189,21 +189,118 @@ for (const count of [1, 2, 3]) test(`两阶段成功 ${count} 条：仅真实搜
   assert.deepEqual(f.store.messages(), []);
 });
 
-test('Journal、Todo、完整对话和回顾原文仅进入 topic runtime，窗口外不发送', async t => {
+test('近期已投递的条目不重复推送：重复标题与链接被剔除，只留新的', async t => {
+  const f = await fixture(t);
+  const job = f.save();
+  f.newsTurn = async policy => { await policy.search({ queries: policy.queries }); return completed(success(2)); };
+  const first = await f.run(job);
+  assert.equal(first.status, 'success');
+  assert.deepEqual(first.items.map(entry => entry.title), ['公开文章 1', '公开文章 2']);
+  assert.doesNotMatch(f.newsCalls[0].prompt, /"exclude"/);
+  // 模型又挑回了第一条；去重在 finish 里硬性剔除，不依赖模型自觉。
+  f.newsTurn = async policy => { await policy.search({ queries: policy.queries }); return completed({ status: 'success', reason: '', items: [item(1), item(3)] }); };
+  const second = await f.run(job);
+  assert.equal(second.status, 'success'); assert.ok(second.deliveredAt);
+  assert.deepEqual(second.items.map(entry => entry.title), ['公开文章 3']);
+  assert.equal(second.sources.length, 1);
+  assert.equal(second.items[0].url, 'https://example.com/news/3');
+  assert.match(second.summary, /公开文章 3/);
+  assert.doesNotMatch(second.summary, /公开文章 1/);
+  const lines = f.newsCalls.at(-1).prompt.split('\n');
+  assert.deepEqual(JSON.parse(lines[2]), { exclude: ['公开文章 1', '公开文章 2'] });
+  assert.doesNotMatch(lines[2], /example\.com|值得回看/);
+  assert.deepEqual(JSON.parse(lines[3]), { queries: f.newsCalls.at(-1).policy.queries, cutoff: END });
+  assert.doesNotMatch(f.newsCalls.at(-1).prompt, new RegExp(SECRET));
+});
+
+test('标题改写但链接相同仍判重复；候选全重复时沉默并写明原因', async t => {
+  const f = await fixture(t); f.add();
+  const job = f.save();
+  f.newsTurn = async policy => { await policy.search({ queries: policy.queries }); return completed(success(1)); };
+  const first = await f.run(job);
+  assert.equal(first.status, 'success');
+  f.newsTurn = async policy => {
+    await policy.search({ queries: policy.queries });
+    return completed({ status: 'success', reason: '', items: [{ sourceId: 'web:1', title: '公开文章 1 更新版', summary: '换个标题再推一次。' }] });
+  };
+  const second = await f.run(job);
+  noDelivery(second, 'silent');
+  assert.match(second.reason, /已推送过/);
+  assert.doesNotMatch(second.reason, /公开文章/);
+  assert.equal(second.searchCalls, 2);
+});
+
+test('无历史时行为不变：无排除清单，成功照常投递', async t => {
+  const f = policyFixture(), p = f.policy;
+  await p.search({ queries: p.queries });
+  const result = p.finish(JSON.stringify(success(2)));
+  assert.equal(result.status, 'success');
+  assert.equal(result.items.length, 2);
+  assert.equal(result.sources.length, 2);
+});
+
+test('Journal、Todo 与用户消息进入 topic runtime；回顾与助手回复是模型产物，不参与推演', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse(END) - 3600000 });
   const f = await fixture(t);
   const raw = ['私有日记甲', '私有待办乙', '私有对话丙', '私有回顾丁'].map(text => text + SECRET);
   f.add(raw[0]); f.store.addTodo(raw[1]); f.store.addMessage('user', raw[2]);
   f.store.saveReflection({ id: 'private-reflection', text: raw[3], start: '2026-09-17T11:00:00.000Z', end: '2026-09-18T11:00:00.000Z' });
+  f.store.addMessage('assistant', '窗口内的助手回复' + SECRET);
   f.store.addJournal('窗口外的旧日记', '2000-01-01T00:00:00.000Z');
   f.store.addMessage('assistant', '未完成的对话', 'pending');
   const run = await f.run(f.save());
   assert.equal(run.status, 'success');
   const local = JSON.parse(f.topicCalls[0].prompt.split('<local_data_untrusted>')[1].split('</local_data_untrusted>')[0]);
-  assert.deepEqual(new Set(local.map(source => source.kind)), new Set(['journal', 'todo', 'message', 'reflection']));
-  for (const text of raw) assert.ok(local.some(source => source.text === text));
+  assert.deepEqual(new Set(local.map(source => source.kind)), new Set(['journal', 'todo', 'message']));
+  for (const text of raw.slice(0, 3)) assert.ok(local.some(source => source.text === text));
+  assert.deepEqual(new Set(local.filter(source => source.kind === 'message').map(source => source.role)), new Set(['user']));
+  for (const text of [raw[3], '窗口内的助手回复' + SECRET]) assert.ok(!local.some(source => String(source.text).includes(text)), text);
   assert.doesNotMatch(f.topicCalls[0].prompt, /窗口外的旧日记|未完成的对话/);
   assert.doesNotMatch(JSON.stringify({ news: f.newsCalls.map(call => call.prompt), search: f.searchCalls, fetch: f.fetchCalls }), new RegExp(SECRET));
+});
+
+test('user.md 与已确认记忆是推演材料：没有当日记录时也推演，且不带入联网阶段', async t => {
+  const f = await fixture(t);
+  f.store.saveProfileBody('user', '我是元宝运营，长期关注大模型发布与厂商动向', f.store.profiles().user.revision);
+  f.store.addMemory('不看的领域：macOS 系统更新、泛泛早报');
+  const run = await f.run(f.save());
+  assert.equal(run.status, 'success');
+  assert.equal(run.topicFallback, false, '已审定画像足以推演，不该退回兜底话题');
+  const local = JSON.parse(f.topicCalls[0].prompt.split('<local_data_untrusted>')[1].split('</local_data_untrusted>')[0]);
+  assert.deepEqual(new Set(local.map(source => source.kind)), new Set(['profile', 'memory']));
+  assert.match(local.find(source => source.kind === 'profile').text, /元宝运营/);
+  assert.match(local.find(source => source.kind === 'memory').text, /泛泛早报/);
+  const outside = JSON.stringify({ news: f.newsCalls.map(call => call.prompt), search: f.searchCalls });
+  assert.doesNotMatch(outside, /元宝运营|泛泛早报/);
+});
+
+test('画像材料不参与变化检测：运行期间确认记忆不得打断联网执行', async t => {
+  const f = await fixture(t);
+  f.store.saveProfileBody('user', '关注 AI Native 增长', f.store.profiles().user.revision);
+  const entered = f.hold(), proceed = f.hold();
+  f.topicTurn = async () => { entered.resolve(); await proceed.promise; return f.topicResult; };
+  const pending = f.run(f.save());
+  await entered.promise;
+  f.store.addMemory('运行期间确认的新记忆');
+  proceed.resolve();
+  const run = await pending;
+  assert.equal(run.status, 'success');
+  assert.equal(f.newsCalls.length, 1);
+});
+
+test('本地摘要任务仍可把回顾当资料，联网任务不使用', async t => {
+  const f = await fixture(t);
+  f.add();
+  f.store.saveReflection({ id: 'local-reflection', text: '本地回顾原文', start: '2026-09-17T11:00:00.000Z', end: '2026-09-18T11:00:00.000Z', createdAt: '2026-09-18T10:00:00.000Z' });
+  f.topicTurn = async prompt => {
+    const data = JSON.parse(prompt.split('<routine_data_untrusted>')[1].split('</routine_data_untrusted>')[0]);
+    return completed({ status: 'success', summary: '仅本地记录摘要', reason: '', sourceIds: [data[0].sourceId] });
+  };
+  const run = await f.run(f.save({ allowNetwork: false }));
+  assert.equal(run.status, 'success');
+  const data = JSON.parse(f.topicCalls[0].prompt.split('<routine_data_untrusted>')[1].split('</routine_data_untrusted>')[0]);
+  assert.ok(data.some(source => source.kind === 'reflection'));
+  assert.equal(f.newsCalls.length, 0);
 });
 
 const fallbackCases = [
@@ -216,6 +313,7 @@ const fallbackCases = [
 ];
 for (const [name, result] of fallbackCases) test(`topic ${name} 必须 fallback 且仍搜索，不成为 no-data 或 silent`, async t => {
   const f = await fixture(t);
+  f.add();
   f.topicResult = result;
   if (name === '运行异常') f.topicTurn = async () => { throw Error(SECRET); };
   if (name === '准备异常') f.runtime.prepare = async () => { throw Error(SECRET); };
@@ -231,12 +329,25 @@ for (const [name, result] of fallbackCases) test(`topic ${name} 必须 fallback 
 });
 
 for (const fallback of [false, true]) test(`搜索后 silent 与搜索前 fallback 独立：fallback=${fallback}`, async t => {
-  const f = await fixture(t); f.topicResult = completed(fallback ? [] : ['AI Native']); f.searchResult = { sources: [] };
+  const f = await fixture(t); f.add(); f.topicResult = completed(fallback ? [] : ['AI Native']); f.searchResult = { sources: [] };
   f.newsTurn = async policy => { await policy.search({ queries: policy.queries }); return completed(silent()); };
   const run = await f.run(f.save());
   noDelivery(run, 'silent'); assert.ok(run.reason); assert.equal(run.topicFallback, fallback);
   assert.equal(run.searchCalls, 1); assert.equal(run.sourcesFound, 0);
   assert.equal(Boolean(run.topicFallbackReason), fallback);
+});
+
+test('窗口内没有用户写的材料时不调用推演模型，直接兜底', async t => {
+  const f = await fixture(t);
+  const run = await f.run(f.save());
+  assert.equal(run.status, 'success');
+  assert.equal(run.topicFallback, true);
+  assert.deepEqual(run.topics, [FALLBACK]);
+  assert.match(run.topicFallbackReason, /没有你新写的/);
+  assert.equal(f.topicCalls.length, 0);
+  assert.equal(f.newsCalls.length, 1);
+  assert.equal(f.searchCalls[0].request.query, `${FALLBACK} 2026-09-11 至 2026-09-18`);
+  assert.deepEqual(f.events.map(([event]) => event), ['news.run', 'news.release']);
 });
 
 test('normalizeTopics 去空白与去重，拒绝私有标识和指令', () => {
@@ -293,7 +404,7 @@ for (const code of [
   'WEB_PROVIDER_CREDENTIAL_MISSING', 'WEB_PROVIDER_CONFIGURED_MISSING', 'WEB_PROVIDER_CONFIGURED_UNAVAILABLE',
   'WEB_PROVIDER_UNAVAILABLE', 'WEB_PROVIDER_AMBIGUOUS', 'WEB_PROVIDER_ERROR', 'WEB_ABORTED',
 ]) for (const ending of ['completed', 'throws', 'truncated']) test(`SQLite 保留安全搜索分类：${code} / ${ending}`, async t => {
-  const f = await fixture(t), logs = [];
+  const f = await fixture(t), logs = []; f.add();
   f.routines.logger = { info: (event, data) => logs.push({ event, data }) };
   f.searchTurn = async () => { throw Object.assign(Error(SECRET), {
     code, cause: Error(SECRET), endpoint: SECRET, key: SECRET, query: SECRET,
@@ -315,7 +426,7 @@ for (const code of [
 });
 
 test('两次实际搜索中第二次失败，保留一次成功但不投递', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t); f.add();
   f.searchTurn = async () => { if (f.searchCalls.length === 2) throw { code: 'WEB_PROVIDER_ERROR', message: SECRET }; return { sources: [] }; };
   f.newsTurn = async policy => { try { await policy.search({ queries: policy.queries }); } catch {} return completed(silent()); };
   const run = await f.run(f.save());
@@ -355,7 +466,7 @@ test('成功搜索后畸形来源列表单独 failed，不作为无资讯', asyn
 });
 
 test('搜索正常为空可 silent；随后模型原始错误不得伪装搜索缺凭据', async t => {
-  const f = await fixture(t); f.searchResult = { sources: [] };
+  const f = await fixture(t); f.add(); f.searchResult = { sources: [] };
   const job = f.save();
   f.newsTurn = async policy => { await policy.search({ queries: policy.queries }); return completed(silent()); };
   const first = await f.run(job);
@@ -442,7 +553,7 @@ test('JSON 被代码围栏包住时按结构照常接受，不因装饰整期失
 });
 
 test('模型跳过搜索直接作答时只补跑一次，补跑成功则正常投递', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t); f.add();
   let turns = 0;
   f.newsTurn = async policy => {
     turns += 1;
@@ -655,7 +766,7 @@ test('来源在 topic 期间变化应停止后续搜索，而非搜索完才取�
 });
 
 test('topic 准备期间取消不能降级 fallback 再搜索', async t => {
-  const f = await fixture(t), job = f.save();
+  const f = await fixture(t); f.add(); const job = f.save();
   f.runtime.prepare = async () => { f.routines.cancel('测试取消'); };
   noDelivery(await f.run(job), 'cancelled');
   assert.equal(f.topicCalls.length, 0); assert.equal(f.newsCalls.length, 0); assert.equal(f.searchCalls.length, 0);
@@ -703,6 +814,7 @@ test('API 启用联网需两个严格 true 同意；停用保存无需同意；�
 
 test('API 手动运行每次都需 confirmNetwork=true；202 在模型完成前返回，历史与幂等正确', async t => {
   const f = await fixture(t, { api: true, now: new Date() });
+  f.add();
   const job = f.save({ enabled: false }), path = '/api/routines/' + job.id;
   const base = { revision: f.store.routines().revision, requestId: randomUUID(), confirmDataSharing: true };
   for (const value of [undefined, false, 'true', 1]) {
