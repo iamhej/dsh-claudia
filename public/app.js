@@ -965,7 +965,7 @@
         const topics = Array.isArray(run.topics) ? run.topics.filter((topic) => typeof topic === 'string' && topic.trim()) : [];
         view.topics.textContent = topics.length ? `话题：${topics.join('、')}` : '';
         view.topics.hidden = !topics.length;
-        view.fallback.textContent = run.topicFallback === true ? '本次使用兜底话题（如无可用本地记录），不代表搜索已成功。' : '';
+        view.fallback.textContent = run.topicFallback === true ? '本次使用了兜底话题。' : '';
         view.fallback.hidden = !view.fallback.textContent;
         const items = Array.isArray(run.items) ? run.items.filter((item) => item && typeof item === 'object') : [];
         view.outcome.textContent = run.status === 'silent' && Array.isArray(run.items) && !items.length && topics.length ? '搜索后无值得推荐的资讯 · 未投递' : '';
@@ -1062,10 +1062,10 @@
 
   function renderRoutines() {
     const capability = state.routineCapability;
-    $('routine-capability').textContent = `${capability.network ? '联网接线可用' : '联网接线不可用'} · ${capability.verified ? '曾成功搜索（宿主报告）' : '尚无成功搜索验证'}`;
-    $('routine-capability-detail').textContent = `${capability.message} ${capability.network ? '接线可用不保证实际搜索成功；默认任务仍停用，由你确认后启用。' : '联网任务不能启用或手动运行，但可停用已有任务、保存停用定义；不会替换为本地摘要。'}`;
+    $('routine-capability').textContent = `${capability.network ? '联网可用' : '联网不可用'} · ${capability.verified ? '搜索已验证' : '搜索未验证'}`;
+    $('routine-capability-detail').textContent = `${capability.message} ${capability.network ? '默认任务仍需你手动启用。' : '联网任务暂时无法启用或运行。'}`;
     $('routine-network-label').textContent = `允许联网 · ${capability.network ? '接线可用' : '当前不可用'}`;
-    $('routine-network-help').textContent = `${capability.network ? '确认后可独立联网，无本地记录时可用兜底话题。' : '当前不支持联网，可勾选并保存但暂不启用。'} 只有话题关键词会发给搜索服务，可能额外收费。`;
+    $('routine-network-help').textContent = `${capability.network ? '可独立联网搜索公开资讯。' : '当前不支持联网，可先保存。'} 搜索可能额外收费。`;
     $('routine-status').textContent = routinePollError || (routineUncertain ? '上次请求结果尚未确认，请刷新状态核对后再操作。' : '时间按本机时区；电脑唤醒后最多补跑最近一次。');
     const jobs = state.routines?.jobs || [];
     const disabled = jobs.filter((job) => !job.enabled);
@@ -1127,7 +1127,7 @@
     if (!await readRoutineState(true) || !state.routines) return;
     const revision = state.routines.revision;
     const deleted = routineDraftId && !routineJob(routineDraftId);
-    if (!await confirmAction('沿用草稿并核对最新版本？', `草稿不会被覆盖，也不会自动提交。${deleted ? '原任务已删除，继续后草稿将作为新任务。' : '下次保存将以刚读取的版本为准，请先核对任务卡中的已保存内容。'}若上次请求超时，创建可能已经成功，请避免重复创建。`, '保留草稿继续编辑', '取消')) return;
+    if (!await confirmAction('沿用草稿并核对最新版本？', `草稿不会丢失。${deleted ? '原任务已删除，保存后将创建为新任务。' : '请核对已保存的内容再保存。'}`, '保留草稿继续编辑', '取消')) return;
     if (revision !== state.routines?.revision) { notify('版本再次变化，请重新核对。'); return; }
     if (deleted) { routineDraftId = ''; $('routine-form-title').textContent = '新建 Routine'; }
     routineDraftRevision = revision;
@@ -1255,7 +1255,7 @@
       view.form.hidden = !draft.editing;
       if (view.input.value !== draft.text) view.input.value = draft.text;
       view.input.disabled = draft.saving || draft.awaiting;
-      view.conflict.textContent = draft.conflict ? '这篇回顾已被外部修改或删除。草稿和原 revision 保留；请复制需要的内容，再载入最新版本合并。' : !validRevision(draft.revision) ? '宿主未提供 revision，暂不能安全保存；请刷新版本。' : '';
+      view.conflict.textContent = draft.conflict ? '这篇回顾已被外部修改或删除，请刷新后重新编辑。' : !validRevision(draft.revision) ? '版本信息缺失，请刷新后重试。' : '';
       view.conflict.hidden = !view.conflict.textContent;
       view.save.disabled = !canMutate() || draft.saving || draft.awaiting || draft.conflict || !validRevision(draft.revision) || !draft.dirty || !draft.text.trim();
       view.save.textContent = draft.saving ? '保存中…' : draft.awaiting ? '等待同步版本' : '保存回顾';
@@ -1764,11 +1764,11 @@
     const packages = payload.packages.filter((plugin) => !plugin.name.startsWith('@deepseek-ai/') && plugin.name !== 'dsh-claudia' && !plugin.name.endsWith('/dsh-claudia'));
     $('plugins-profile').textContent = payload.profile.trim() || '未知';
     $('plugins-runtime').textContent = payload.runtimeAvailable ? '可直接观测' : '不可直接观测（不代表插件未加载）';
-    feedback('plugins-status', [payload.available ? `已读取正式 bundle 清单 · ${packages.length} 项非系统扩展` : '插件清单暂不可用', payload.message].filter(Boolean).join('。'), !payload.available);
+    feedback('plugins-status', [payload.available ? `已读取 · ${packages.length} 项扩展` : '插件清单暂不可用', payload.message].filter(Boolean).join('。'), !payload.available);
     const list = $('plugins-list');
     list.replaceChildren();
     $('plugins-empty').hidden = payload.available && packages.length > 0;
-    $('plugins-empty').textContent = payload.available ? '当前 profile 没有非系统扩展；系统扩展及 Claudia 自身不在此展示。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新后重试。';
+    $('plugins-empty').textContent = payload.available ? '暂无扩展。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新后重试。';
     if (!payload.available) return;
     const phases = { pending: '宿主等待就绪', active: '宿主已加载', failed: '宿主插件失败', loading: '宿主加载中', unloading: '宿主卸载中' };
     for (const plugin of packages) {
@@ -1862,8 +1862,7 @@
     const blocked = restartBlocked();
     $('email-restart').disabled = Boolean(blocked);
     $('email-restart-hint').textContent = blocked || '已保存，重启后生效；点击后仍需确认，不会自动重启。';
-    $('email-loaded-hint').textContent = '无需打开宿主即可使用上方账号表单。此入口仅供高级管理，打不开不影响在此填写；宿主页面可能检查已配置账号。'
-      + (emailLoaded() && !emailError ? '邮件扩展已加载，不代表邮箱已连接。' : '尚未确认邮件扩展已加载，实际状态以上方 Loader 报告为准。');
+    $('email-loaded-hint').textContent = emailLoaded() && !emailError ? '邮件扩展已加载。' : '邮件扩展尚未加载，可在上方直接配置账号。';
     $('email-open-harness').disabled = !canMutate() || emailBusy || emailAccountBusy || pending.has('open-harness');
   }
 
@@ -2089,8 +2088,8 @@
     let submitted = false;
     try {
       if (!await confirmAction('单独保存邮箱配置？',
-        `收信：${receiveEnabled ? '开启' : '关闭'}；发信：${sendEnabled ? '开启' : '关闭'}。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。\n授权码将保存在本机设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。\n宿主邮件工具之后可使用该账号，宿主页面可能检查账号。\n本次不主动读信、不发送测试邮件、不开放 Claudia 普通聊天工具，也不改变 Loader 开关或提交其它 Settings 草稿。\n邮箱配置保存即生效（live），无需重启。`,
-        '确认保存到本机设置文件', '继续编辑')) return;
+        `收信：${receiveEnabled ? '开启' : '关闭'}；发信：${sendEnabled ? '开启' : '关闭'}。\n授权码保存在本机，不会上传。保存后立即生效，无需重启。`,
+        '确认保存', '继续编辑')) return;
       if (!canMutate() || emailAccountSnapshot.revision !== revision) {
         feedback('email-account-feedback', '连接或配置版本已变化，未提交邮箱配置；草稿保留，请重新载入核对。', true);
         return;
@@ -2106,14 +2105,14 @@
       applyEmailAccount(snapshot);
       emailAccountEditing = false;
       emailAccountNeedsReadback = false;
-      feedback('email-account-feedback', '邮箱配置已单独保存并即时生效，无需重启；输入框中的授权码已清空。未读信、未发测试邮件，未开放 Claudia 聊天工具，其它设置草稿未提交。');
+      feedback('email-account-feedback', '邮箱配置已保存并生效。');
     } catch (error) {
       if (submitted) {
         $('email-account-password').value = '';
         emailAccountNeedsReadback = true;
         const message = error?.status === 400 ? '邮箱配置校验未通过。' : error?.status === 409 ? '邮箱配置版本冲突。'
           : error?.status === 503 ? '宿主未能确认邮箱配置保存结果。' : '邮箱配置保存未获有效确认，可能已写入。';
-        emailAccountError = `${message} 已清空授权码并锁定保存，请确认后重新载入；不会自动重试，也不能凭地址相同判断新授权码保存成功。`;
+        emailAccountError = `${message} 请确认后重新载入。`;
         feedback('email-account-feedback', emailAccountError, true);
       } else feedback('email-account-feedback', '本次未提交邮箱配置，草稿仍保留。', true);
     } finally {
@@ -2163,9 +2162,9 @@
       if (sequence !== emailReviewSequence || !$('settings-dialog').open) return;
       if (!emailReviewCanStart()) throw new Error('当前配置或运行状态已变化，请核对后重新预览；未启动分析。');
       const approved = await confirmAction('确认共享邮件标题与发件人并独立分析？',
-        `只读 INBOX：${preview.window.label}。\n会分页读取该范围内全部邮件标题与发件人显示名/地址，不设置封数上限；不会读取正文、原始 MIME 或附件内容，也不会改变已读状态。\n分析要求：${prompt}\n标题与发件人字段将发送至当前所选模型：\nProvider：${preview.selection.provider}\nModel：${preview.selection.model}\n模型可能在云端；邮件较多时可能更慢、产生更多费用或受模型上下文限制。这些字段会在独立分析会话中持久记录，结果留在 Claudia 记录，不上传 Workbench。\n发件人字段可辅助判断疑似广告、欺诈风险或疑似官方邮件，但单凭 From 字段不能验证真实身份。\n不自动发信、不访问邮件链接。普通聊天继续零工具，邮件字段不自动带入普通后续会话。\n确认后先处理未保存的设置与邮箱草稿，再关闭设置，在左侧对话展示进度与结果，可点击“停止”。`,
-        '确认共享并分析', '取消，不连接邮箱');
-      if (!approved) { feedback('email-review-feedback', '已取消；未连接邮箱，未向模型发送邮件标题或发件人。'); return; }
+        `范围：${preview.window.label}\n只读取邮件标题和发件人，不读正文或附件。\n分析要求：${prompt}\n模型：${preview.selection.provider} / ${preview.selection.model}\n邮件较多时可能产生更多费用。确认后在左侧对话展示结果。`,
+        '确认分析', '取消');
+      if (!approved) { feedback('email-review-feedback', '已取消。'); return; }
       if (sequence !== emailReviewSequence || !emailReviewCanStart() || !$('settings-dialog').open) return;
       const requestId = crypto.randomUUID();
       // 必须沿用关闭保护；取消、保存失败或仍有待处理草稿时均不发起分析。
@@ -2775,13 +2774,13 @@
     }
     const body = { settings, profiles, settingsRevision: settingsBaselineRevision, soulRevision: settingsNameRevision };
     const warnings = [];
-    if (settings.allowContext) warnings.push('以后主动发送对话时，会向已配置的模型自动发送最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加模型费用。关闭不会撤回已发送的内容。');
-    if (settings.activityEnabled) warnings.push('在本机记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文；开启每日回顾后，可用时长会随回顾内容外发。');
-    if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给模型生成回顾，会产生费用。');
-    if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启服务、短暂断开连接。');
-    if (settings.memorySuggestionsEnabled) warnings.push('允许模型处理内容并生成记忆候选，可能产生费用；不会自动写入长期记忆，仍需你逐条接受。');
-    if (settings.profileEnabled) warnings.push('允许模型处理近 30 天的 Journal、Todo 与你发出的消息并生成画像草稿，可能产生费用；不会自动改写 user 资料，仍需你逐条接受。');
-    if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字及 soul / user / system 正文会在后续对话中作为上下文发送给模型服务，可能增加费用，不受“附带个人记录”开关限制。请勿填写密钥或不愿外发的隐私。保存正文和名字本身不调用模型。');
+    if (settings.allowContext) warnings.push('对话时会自动附带近期日志、记忆和待办，可能增加费用。');
+    if (settings.activityEnabled) warnings.push('记录应用使用时长，不采集屏幕或键盘内容。');
+    if (settings.reflectionEnabled) warnings.push('每天 05:00 自动生成回顾，会产生费用。');
+    if (settings.autoUpdateEnabled) warnings.push('每天 06:00 自动更新，可能短暂重启。');
+    if (settings.memorySuggestionsEnabled) warnings.push('模型会生成记忆候选，需你逐条确认，可能产生费用。');
+    if (settings.profileEnabled) warnings.push('模型会生成画像草稿，需你逐条确认，可能产生费用。');
+    if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字和性格设定会发送给模型。请勿填写密钥或隐私。');
     const returnFocus = document.activeElement;
     settingsSaving = true;
     window.clearTimeout(settingsPollTimer);
@@ -2950,8 +2949,8 @@
     updateControls();
     let sent = false;
     try {
-      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给所选模型，可能产生费用。篇幅宁短勿长，只写值得回顾的事，不凑字数。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
-        reflectionFeedback('已取消，未提交运行请求；自动开关与其它草稿保持不变。');
+      if (!await confirmAction('补跑最近本地 05:00 一期？', '将过去 24 小时的记录发送给模型生成回顾，已有结果不重复生成，可能产生费用。', '确认运行', '取消')) {
+        reflectionFeedback('已取消。');
         return;
       }
       if (!canRunReflection(true)) throw new Error('当前状态已变化，请先保存并启用每日回顾后核对运行状态。');
@@ -2980,8 +2979,8 @@
     void mutate('background', '/api/background', { enabled }, 'background-feedback', enabled ? '启用请求已完成，以上方宿主返回的后台状态为准。' : '停用请求已完成，以上方宿主返回的后台状态为准。', {
       timeout: 120000,
       confirm: enabled
-        ? ['启用 macOS 登录后台服务？', '确认后将请求安装并启用 macOS 系统后台服务，用于在后台运行服务，并在登录后自动启动。关闭浏览器本来就不会关闭正在运行的服务；启用结果以上方返回状态为准，不代表当前进程已被接管。\n\n此操作不改变其他功能开关。已开启的回顾和记忆候选可能调用付费模型，自动更新可能重启宿主；关机或休眠期间不保证执行。', '确认启用系统服务', '暂不启用']
-        : ['停用登录后台服务？', '将请求停用 macOS 系统后台服务和登录自启，可能中断当前服务连接。停用结果以返回状态为准，已有记录保留。\n\n定时任务仍需服务运行；关闭浏览器与停用服务不是同一操作。', '确认停用', '保持启用']
+        ? ['启用后台服务？', '登录 macOS 后自动启动服务，无需保持终端打开。关机或休眠时不执行定时任务。', '确认启用', '暂不启用']
+        : ['停用后台服务？', '停用后定时任务需要手动启动服务才能执行。已有记录保留。', '确认停用', '保持启用']
     });
   }
   function openHost(event) {
