@@ -101,8 +101,8 @@
   let routineLastRead = 0;
   let routinePollError = '';
   let routineUncertain = false;
-  const routineSharing = '最近 24 小时的有限本地记录（对话、Journal、待办及回顾摘录），以及现有人格与用户设定，会发送给 Harness 所选模型，可能产生费用。';
-  const routineNetworkSharing = '所选模型用这些内容推导抽象话题；仅抽象话题词进入独立联网执行，并发给 Harness 搜索提供方，不发送任务原始 prompt 或本地记录原文给搜索。搜索提供方可能内部再调用模型或搜索，并产生额外费用。\n联网执行仅对公开网页匿名 GET，不携带 Cookie、不登录；不允许文件、Shell 或任务管理工具。没有可用本地记录时，仍可使用兜底话题搜索。';
+  const routineSharing = '最近 24 小时的本地记录（对话、Journal、待办及回顾）和你的设定会发送给模型处理，可能产生费用。';
+  const routineNetworkSharing = '模型会从你的记录中推导话题关键词，只有关键词会用于搜索，原始记录不会发给搜索服务。搜索只读取公开网页，不登录、不携带个人信息。可能产生额外费用。';
   const routineStatusLabels = { running: '运行中', success: '成功', silent: '静默 · 未投递', 'no-data': '无数据 · 未投递', failed: '失败', cancelled: '已取消' };
 
   function element(tag, className, text) {
@@ -168,7 +168,7 @@
     $('assistant-name-input').title = name;
     $('memory-input-label').textContent = `想让 ${name} 记住的一件事`;
     $('welcome-copy').textContent = `零散的念头、今天的小事，或一个还没想明白的问题，都可以和 ${name} 聊聊。`;
-    $('settings-assistant-description').textContent = `${name} 作为同进程插件复用 Harness 的模型与凭据，无需复制 Key，也不会在此读取或回显密钥。`;
+    $('settings-assistant-description').textContent = `${name} 使用你已配置的模型，无需在这里填写密钥。`;
     // 保留文案生成方式，让尚在显示的提示随改名更新，不修改对话或记录原文。
     for (const [id, message] of feedbackMessages) $(id).textContent = uiText(message);
     $('toast').textContent = uiText(toastMessage);
@@ -183,7 +183,7 @@
   function apiError(payload, status) {
     const supplied = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;
     let message = typeof supplied === 'string' && supplied.trim() ? supplied.slice(0, 800) : `本机服务未能完成请求（HTTP ${status}），请稍后重试。`;
-    if (status === 401 || status === 403) message = '请求未获授权。请先重新加载页面以恢复本机安全校验；若模型请求仍失败，请回 Harness 的模型设置检查，无需在此填写密钥。';
+    if (status === 401 || status === 403) message = '请求未获授权，请重新加载页面。如果问题持续，请检查模型设置。';
     if (status === 409 || status === 412) message = `版本冲突或操作忙碌，未覆盖已有数据。${asText(supplied)}`;
     const error = new Error(message);
     error.status = status;
@@ -702,7 +702,7 @@
       view.run.disabled = locked || routineNetworkBlocked(job) || routineRunning(id);
       view.run.querySelector('span').textContent = routineRunning(id) ? '运行中 / 待同步' : '手动运行';
       view.run.title = routineNetworkBlocked(job) ? routineBlockedReason(job) : job.allowNetwork
-        ? '确认数据共享与联网后运行；无本地记录时可用兜底话题搜索' : '单独确认后，将本地摘录发送给 Harness 所选模型';
+        ? '确认数据共享与联网后运行；无本地记录时可用兜底话题搜索' : '确认后，将本地记录摘录发送给模型处理';
     }
   }
 
@@ -1065,7 +1065,7 @@
     $('routine-capability').textContent = `${capability.network ? '联网接线可用' : '联网接线不可用'} · ${capability.verified ? '曾成功搜索（宿主报告）' : '尚无成功搜索验证'}`;
     $('routine-capability-detail').textContent = `${capability.message} ${capability.network ? '接线可用不保证实际搜索成功；默认任务仍停用，由你确认后启用。' : '联网任务不能启用或手动运行，但可停用已有任务、保存停用定义；不会替换为本地摘要。'}`;
     $('routine-network-label').textContent = `允许联网 · ${capability.network ? '接线可用' : '当前不可用'}`;
-    $('routine-network-help').textContent = `${capability.network ? '确认后可独立联网，无本地记录时可用兜底话题。' : '当前能力不支持联网，可勾选并保存停用定义。'} 仅抽象话题词发给 Harness 搜索提供方，可能额外收费；执行只允许公开网页匿名 GET。`;
+    $('routine-network-help').textContent = `${capability.network ? '确认后可独立联网，无本地记录时可用兜底话题。' : '当前不支持联网，可勾选并保存但暂不启用。'} 只有话题关键词会发给搜索服务，可能额外收费。`;
     $('routine-status').textContent = routinePollError || (routineUncertain ? '上次请求结果尚未确认，请刷新状态核对后再操作。' : '时间按本机时区；电脑唤醒后最多补跑最近一次。');
     const jobs = state.routines?.jobs || [];
     const disabled = jobs.filter((job) => !job.enabled);
@@ -1484,52 +1484,52 @@
   }
 
   function renderRuntime() {
-    $('file-access-root').textContent = state.runtime.fileAccess?.root || '尚未确认 Harness 目录';
+    $('file-access-root').textContent = state.runtime.fileAccess?.root || '尚未确认数据目录';
     $('file-access-summary').textContent = state.runtime.fileAccess?.mode === 'denied'
-      ? '对话目前不能读写文件或执行命令。权限上限仅为上述 Harness 目录；目录内的凭据、程序与启动配置也不授权。页面保存和后台服务需单独操作。'
-      : '当前宿主未报告文件权限边界，不据此授予电脑操作权限。';
+      ? '对话不能读写文件或执行命令。数据目录内的凭据和程序文件也不授权。'
+      : '尚未确认文件权限边界。';
     const runtime = state.runtime;
     const verification = !hasState ? '尚未读取' : offline ? '无法获取最新状态'
       : runtime.modelVerified === true ? '已验证（宿主报告）' : '待首轮验证';
-    const credentialSource = !hasState ? '尚未读取' : runtime.credentialSource === 'harness' ? 'Harness（继承，不读取密钥）' : '宿主未提供';
+    const credentialSource = !hasState ? '尚未读取' : runtime.credentialSource === 'harness' ? '继承主设置' : '未提供';
     let label = '正在读取状态';
     let kind = 'waiting';
-    if (offline) { label = '本机服务暂不可用'; kind = 'error'; }
-    else if (!hasState && !booting) label = '等待本机服务';
+    if (offline) { label = '暂时无法连接'; kind = 'error'; }
+    else if (!hasState && !booting) label = '等待服务启动';
     else if (hasState) {
-      if (runtime.configured !== true) label = '宿主未配置模型';
-      else if (runtime.installed !== true || runtime.connected !== true) label = '等待 Harness 宿主';
-      else if (runtime.error) { label = 'Harness · 请求需检查'; kind = 'error'; }
-      else if (runtime.modelVerified === true) { label = '继承 Harness · 已验证'; kind = 'connected'; }
-      else label = '继承 Harness · 待首轮验证';
+      if (runtime.configured !== true) label = '尚未配置模型';
+      else if (runtime.installed !== true || runtime.connected !== true) label = '等待服务就绪';
+      else if (runtime.error) { label = '需要检查配置'; kind = 'error'; }
+      else if (runtime.modelVerified === true) { label = '已连接 · 已验证'; kind = 'connected'; }
+      else label = '已连接 · 待验证';
     }
     $('runtime-label').textContent = label;
     $('runtime-button').dataset.state = kind;
-    $('runtime-button').title = `${label} · 宿主连接不等于模型验证 · 打开设置数据与维护页`;
+    $('runtime-button').title = `${label} · 打开设置`;
     $('runtime-button').setAttribute('aria-label', $('runtime-button').title);
-    $('harness-badge').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '同进程插件' : '宿主未就绪';
-    $('harness-installed').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '已安装 · 原生插件' : '宿主未就绪';
-    $('harness-version').textContent = runtime.version || (hasState ? '宿主未提供' : '—');
-    $('model-configured').textContent = !hasState ? '尚未读取' : runtime.configured === true ? '路由有效（不代表凭据已验证）' : '宿主未配置有效路由';
-    $('model-connected').textContent = !hasState ? '尚未读取' : offline ? '无法获取最新状态' : runtime.connected === true ? '宿主已连接（非模型网络验证）' : '宿主尚未连接';
+    $('harness-badge').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '已就绪' : '未就绪';
+    $('harness-installed').textContent = !hasState ? '尚未读取' : runtime.installed === true ? '已安装' : '未就绪';
+    $('harness-version').textContent = runtime.version || (hasState ? '未提供' : '—');
+    $('model-configured').textContent = !hasState ? '尚未读取' : runtime.configured === true ? '已配置' : '尚未配置';
+    $('model-connected').textContent = !hasState ? '尚未读取' : offline ? '暂时无法获取' : runtime.connected === true ? '已连接' : '未连接';
     $('model-verified').textContent = verification;
     $('credential-source').textContent = credentialSource;
-    $('model-provider').textContent = state.settings.provider || (hasState ? 'Harness 尚未配置' : '—');
+    $('model-provider').textContent = state.settings.provider || (hasState ? '尚未配置' : '—');
     $('model-provider').title = $('model-provider').textContent;
-    $('model-name').textContent = state.settings.model || (hasState ? 'Harness 尚未配置' : '—');
+    $('model-name').textContent = state.settings.model || (hasState ? '尚未配置' : '—');
     $('model-name').title = $('model-name').textContent;
     $('settings-host-hint').textContent = !hasState
-      ? '正在读取宿主配置。模型设置由 Harness 管理，打开或保存此设置不会连接模型或发送消息。'
-      : offline ? '暂时无法读取最新宿主配置；请重新加载。'
+      ? '正在读取配置。打开或保存设置不会连接模型或发送消息。'
+      : offline ? '暂时无法读取配置，请重新加载。'
         : runtime.configured === true
-          ? '已继承 Harness 的有效模型路由，不代表网络或凭据已经验证。更换模型请回宿主设置；保存名字与正文本身不调用模型，但开启自动功能后宿主可能按计划调用并收费。'
-          : '宿主尚未配置有效模型路由，请回 Harness 的模型设置处理。仍可保存名字与偏好，无需复制 Key；自动生成内容需要可用的模型路由。';
+          ? '模型已配置。更换模型请到主设置；保存这里的设置不会调用模型，但开启自动功能后会按计划调用并可能产生费用。'
+          : '尚未配置模型，请到主设置中配置。你仍然可以保存名字和偏好设定。';
     $('welcome-connection').textContent = !hasState || offline
-      ? '读取本机状态后再开始对话；不会自动连接模型或发送消息。无需在此复制 Key。'
+      ? '读取状态后再开始对话。'
       : runtime.configured === true
-        ? `已继承 Harness 的模型路由。由你手动发送第一句话给 ${displayName()}，模型验证结果以宿主报告为准。Journal 和手动记忆也可独立使用。`
-        : `与 ${displayName()} 对话前，请回 Harness 的模型设置配置有效路由，无需在此复制 Key。Journal、手动记忆与改名不受影响。`;
-    feedback('runtime-error', runtime.error ? (name) => `${name} 的宿主报告：${runtime.error}；模型相关问题请回 Harness 的模型设置检查。` : '', true);
+        ? `模型已就绪。发送第一句话给 ${displayName()} 开始对话吧。Journal 和记忆也可以随时使用。`
+        : `与 ${displayName()} 对话前，请先配置模型。Journal、记忆和改名不受影响。`;
+    feedback('runtime-error', runtime.error ? (name) => `${name} 遇到了问题：${runtime.error}` : '', true);
     const hint = state.settings.allowContext ? '自动附带最多 10 条最近日志及 10 条记忆原文 · 上下文限 14000 字符' : '默认不自动发送日志与记忆原文';
     $('context-hint').textContent = attachments.size ? `已附加 ${attachments.size} 条日志 · 发送时一并提供` : hint;
   }
@@ -1768,7 +1768,7 @@
     const list = $('plugins-list');
     list.replaceChildren();
     $('plugins-empty').hidden = payload.available && packages.length > 0;
-    $('plugins-empty').textContent = payload.available ? '当前 profile 没有非系统扩展；系统扩展及 Claudia 自身不在此展示。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新或前往 Harness 查看。';
+    $('plugins-empty').textContent = payload.available ? '当前 profile 没有非系统扩展；系统扩展及 Claudia 自身不在此展示。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新后重试。';
     if (!payload.available) return;
     const phases = { pending: '宿主等待就绪', active: '宿主已加载', failed: '宿主插件失败', loading: '宿主加载中', unloading: '宿主卸载中' };
     for (const plugin of packages) {
@@ -2089,7 +2089,7 @@
     let submitted = false;
     try {
       if (!await confirmAction('单独保存邮箱配置？',
-        `收信：${receiveEnabled ? '开启' : '关闭'}；发信：${sendEnabled ? '开启' : '关闭'}。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。\n授权码将保存在本机 Harness 设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。\n宿主邮件工具之后可使用该账号，宿主页面可能检查账号。\n本次不主动读信、不发送测试邮件、不开放 Claudia 普通聊天工具，也不改变 Loader 开关或提交其它 Settings 草稿。\n邮箱配置保存即生效（live），无需重启。`,
+        `收信：${receiveEnabled ? '开启' : '关闭'}；发信：${sendEnabled ? '开启' : '关闭'}。勾选发信启用宿主发信能力，不等于左侧普通对话可发信；邮件分析始终无外发工具。兼容版仅支持经审批的纯文本新邮件，不支持附件、回复或转发。\n授权码将保存在本机设置文件中，不是系统钥匙串；此页面不使用浏览器持久存储。\n宿主邮件工具之后可使用该账号，宿主页面可能检查账号。\n本次不主动读信、不发送测试邮件、不开放 Claudia 普通聊天工具，也不改变 Loader 开关或提交其它 Settings 草稿。\n邮箱配置保存即生效（live），无需重启。`,
         '确认保存到本机设置文件', '继续编辑')) return;
       if (!canMutate() || emailAccountSnapshot.revision !== revision) {
         feedback('email-account-feedback', '连接或配置版本已变化，未提交邮箱配置；草稿保留，请重新载入核对。', true);
@@ -2163,7 +2163,7 @@
       if (sequence !== emailReviewSequence || !$('settings-dialog').open) return;
       if (!emailReviewCanStart()) throw new Error('当前配置或运行状态已变化，请核对后重新预览；未启动分析。');
       const approved = await confirmAction('确认共享邮件标题与发件人并独立分析？',
-        `只读 INBOX：${preview.window.label}。\n会分页读取该范围内全部邮件标题与发件人显示名/地址，不设置封数上限；不会读取正文、原始 MIME 或附件内容，也不会改变已读状态。\n分析要求：${prompt}\n标题与发件人字段将发送至当前所选模型：\nProvider：${preview.selection.provider}\nModel：${preview.selection.model}\n模型可能在云端；邮件较多时可能更慢、产生更多费用或受模型上下文限制。这些字段会在 Harness 独立分析会话中持久记录，结果留在 Claudia 记录，不上传 Workbench。\n发件人字段可辅助判断疑似广告、欺诈风险或疑似官方邮件，但单凭 From 字段不能验证真实身份。\n不自动发信、不访问邮件链接。普通聊天继续零工具，邮件字段不自动带入普通后续会话。\n确认后先处理未保存的设置与邮箱草稿，再关闭设置，在左侧对话展示进度与结果，可点击“停止”。`,
+        `只读 INBOX：${preview.window.label}。\n会分页读取该范围内全部邮件标题与发件人显示名/地址，不设置封数上限；不会读取正文、原始 MIME 或附件内容，也不会改变已读状态。\n分析要求：${prompt}\n标题与发件人字段将发送至当前所选模型：\nProvider：${preview.selection.provider}\nModel：${preview.selection.model}\n模型可能在云端；邮件较多时可能更慢、产生更多费用或受模型上下文限制。这些字段会在独立分析会话中持久记录，结果留在 Claudia 记录，不上传 Workbench。\n发件人字段可辅助判断疑似广告、欺诈风险或疑似官方邮件，但单凭 From 字段不能验证真实身份。\n不自动发信、不访问邮件链接。普通聊天继续零工具，邮件字段不自动带入普通后续会话。\n确认后先处理未保存的设置与邮箱草稿，再关闭设置，在左侧对话展示进度与结果，可点击“停止”。`,
         '确认共享并分析', '取消，不连接邮箱');
       if (!approved) { feedback('email-review-feedback', '已取消；未连接邮箱，未向模型发送邮件标题或发件人。'); return; }
       if (sequence !== emailReviewSequence || !emailReviewCanStart() || !$('settings-dialog').open) return;
@@ -2193,7 +2193,7 @@
     $('cancel-button').hidden = !busy;
     $('cancel-button').disabled = !busy || !activeRun.runId || activeRun.cancelRequested || activeRun.phase === 'sync';
     $('send-button').disabled = !usable || resetting || settingsSaving || state.runtime.configured !== true || !$('chat-input').value.trim();
-    $('send-button').title = state.runtime.configured === true ? `发送给 ${displayName()}` : '宿主未配置模型，请回 Harness 的模型设置处理';
+    $('send-button').title = state.runtime.configured === true ? `发送给 ${displayName()}` : '宿主未配置模型，请在模型设置中检查';
     $('send-button').setAttribute('aria-label', `发送给 ${displayName()}`);
     $('journal-save').disabled = !usable || journalSaving || !$('journal-input').value.trim();
     $('journal-save').textContent = journalSaving ? '保存中…' : '保存记录';
@@ -2545,7 +2545,7 @@
     $('restart-state').dataset.state = restartInFlight ? 'restarting' : pendingRestart ? 'pending' : restart.state;
     $('restart-running-version').textContent = restart.runningVersion || '宿主未提供';
     $('restart-installed-version').textContent = restart.installedVersion || '宿主未提供';
-    $('restart-description').textContent = [emailSnapshot?.needsRestart ? '邮件开关已单独保存，重启后生效。' : '', pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启承载 Claudia 的 Harness 服务。', restart.message || restart.reason].filter(Boolean).join('\n');
+    $('restart-description').textContent = [emailSnapshot?.needsRestart ? '邮件开关已单独保存，重启后生效。' : '', pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启 Claudia 的后台服务。', restart.message || restart.reason].filter(Boolean).join('\n');
     const blocked = restartBlocked();
     const buttonLabel = restartInFlight || restart.state === 'restarting' ? '正在重启…' : pendingRestart ? '重启以应用更新' : '重启服务';
     $('restart-hint').textContent = blocked;
@@ -2561,7 +2561,7 @@
     if (restartBlocked()) return;
     restartConfirming = true;
     updateControls();
-    const approved = await confirmAction('重启承载 Claudia 的 Harness？', '将重启承载 Claudia 的 Harness 服务，期间会短暂断开连接，已有对话与本地记录保留。\n\n存在未保存草稿或忙碌任务时不会发起重启。只提交一次请求，不会因网络超时重复发送。', '确认重启服务', '暂不重启');
+    const approved = await confirmAction('重启 Claudia 的后台服务？', '将重启 Claudia 的后台服务，期间会短暂断开连接，已有对话与本地记录保留。\n\n存在未保存草稿或忙碌任务时不会发起重启。只提交一次请求，不会因网络超时重复发送。', '确认重启服务', '暂不重启');
     restartConfirming = false;
     if (!approved) { updateControls(); return; }
     const blocked = restartBlocked();
@@ -2775,10 +2775,10 @@
     }
     const body = { settings, profiles, settingsRevision: settingsBaselineRevision, soulRevision: settingsNameRevision };
     const warnings = [];
-    if (settings.allowContext) warnings.push('以后主动发送对话时，会向 Harness 配置的模型服务自动发送最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加模型费用。关闭不会撤回已发送的内容。');
+    if (settings.allowContext) warnings.push('以后主动发送对话时，会向已配置的模型自动发送最多各 10 条最近日志、确认记忆和未完成待办的原文，总计不超过 14000 字符，可能增加模型费用。关闭不会撤回已发送的内容。');
     if (settings.activityEnabled) warnings.push('在本机记录应用名称与前台时长，不采集窗口标题、网页、屏幕、键盘或正文；开启每日回顾后，可用时长会随回顾内容外发。');
     if (settings.reflectionEnabled) warnings.push('每天本地 05:00，将过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给模型生成回顾，会产生费用。');
-    if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启 Harness、短暂断开连接。');
+    if (settings.autoUpdateEnabled) warnings.push('每天本地 06:00 检查并安装稳定版，可能重启服务、短暂断开连接。');
     if (settings.memorySuggestionsEnabled) warnings.push('允许模型处理内容并生成记忆候选，可能产生费用；不会自动写入长期记忆，仍需你逐条接受。');
     if (settings.profileEnabled) warnings.push('允许模型处理近 30 天的 Journal、Todo 与你发出的消息并生成画像草稿，可能产生费用；不会自动改写 user 资料，仍需你逐条接受。');
     if (Object.keys(profiles).length || Object.hasOwn(settings, 'assistantName')) warnings.push('名字及 soul / user / system 正文会在后续对话中作为上下文发送给模型服务，可能增加费用，不受“附带个人记录”开关限制。请勿填写密钥或不愿外发的隐私。保存正文和名字本身不调用模型。');
@@ -2950,7 +2950,7 @@
     updateControls();
     let sent = false;
     try {
-      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给 Harness 所选模型，可能产生费用。篇幅宁短勿长，只写值得回顾的事，不凑字数。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
+      if (!await confirmAction('补跑最近本地 05:00 一期？', '需要已保存并启用每日回顾。补跑最近本地 05:00 一期，已有结果不重复生成。\n会把该期过去 24 小时的 Journal、Todo、对话摘录和可选应用时长发送给所选模型，可能产生费用。篇幅宁短勿长，只写值得回顾的事，不凑字数。\n不改变统计窗口或自动开关，也不提交其它设置草稿。', '确认共享并运行', '取消')) {
         reflectionFeedback('已取消，未提交运行请求；自动开关与其它草稿保持不变。');
         return;
       }
@@ -2980,8 +2980,8 @@
     void mutate('background', '/api/background', { enabled }, 'background-feedback', enabled ? '启用请求已完成，以上方宿主返回的后台状态为准。' : '停用请求已完成，以上方宿主返回的后台状态为准。', {
       timeout: 120000,
       confirm: enabled
-        ? ['启用 macOS 登录后台服务？', '确认后将请求安装并启用 macOS 系统后台服务，用于脱离终端运行 Harness，并在登录后自动启动。关闭浏览器本来就不会关闭正在运行的服务；启用结果以上方返回状态为准，不代表当前进程已被接管。\n\n此操作不改变其他功能开关。已开启的回顾和记忆候选可能调用付费模型，自动更新可能重启宿主；关机或休眠期间不保证执行。', '确认启用系统服务', '暂不启用']
-        : ['停用登录后台服务？', '将请求停用 macOS 系统后台服务和登录自启，可能中断当前 Harness 连接。停用结果以返回状态为准，已有记录保留。\n\n定时任务仍需 Harness 运行；关闭浏览器与停用服务不是同一操作。', '确认停用', '保持启用']
+        ? ['启用 macOS 登录后台服务？', '确认后将请求安装并启用 macOS 系统后台服务，用于在后台运行服务，并在登录后自动启动。关闭浏览器本来就不会关闭正在运行的服务；启用结果以上方返回状态为准，不代表当前进程已被接管。\n\n此操作不改变其他功能开关。已开启的回顾和记忆候选可能调用付费模型，自动更新可能重启宿主；关机或休眠期间不保证执行。', '确认启用系统服务', '暂不启用']
+        : ['停用登录后台服务？', '将请求停用 macOS 系统后台服务和登录自启，可能中断当前服务连接。停用结果以返回状态为准，已有记录保留。\n\n定时任务仍需服务运行；关闭浏览器与停用服务不是同一操作。', '确认停用', '保持启用']
     });
   }
   function openHost(event) {
@@ -2990,7 +2990,7 @@
     if (emailAccountBusy) return;
     void mutate('open-harness', '/api/open-harness', {}, feedbackId, event.currentTarget.id === 'email-open-harness'
       ? '已请求打开可选宿主入口。即使宿主页面无法打开，也可直接在 Claudia 的邮箱表单中配置。'
-      : '已请求本机打开实际 Harness 宿主地址。请在宿主中使用模型齿轮或连接器配置。', { refresh: false });
+      : '已请求本机打开宿主管理页面。可在其中配置模型与连接器。', { refresh: false });
   }
 
   async function saveRevision(kind, id) {
@@ -3154,12 +3154,12 @@
         const warning = typeof frame.warning === 'string' ? frame.warning.trim() : '';
         feedback('chat-feedback', run.source === 'email-review'
           ? `独立邮件标题与发件人分析${assistant.status === 'complete' ? '已完成' : `：${messageStatus(assistant.status) || '未完整结束'}`}。这些邮件字段不自动带入普通后续会话。${warning ? ` ${warning}` : ''}`
-          : (name) => `${assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请回 Harness 的模型设置检查。`}${warning ? ` ${warning}` : ''}`);
+          : (name) => `${assistant.status === 'complete' ? `${name} 的回复已完成。` : `${name}：${messageStatus(assistant.status) || '回复未完整结束'}，可继续交流；模型问题请在模型设置中检查。`}${warning ? ` ${warning}` : ''}`);
         if (warning) notify(warning);
         return true;
       }
       case 'error':
-        throw new Error(typeof frame.error === 'string' ? frame.error : asText(frame.error?.message) || '模型暂时没有完成回复，请回 Harness 的模型设置检查后重试。');
+        throw new Error(typeof frame.error === 'string' ? frame.error : asText(frame.error?.message) || '模型暂时没有完成回复，请在模型设置中检查后重试。');
       default:
         if (frame.error) throw apiError(frame, 500);
         return false;
@@ -3214,7 +3214,7 @@
     const text = $('chat-input').value.trim();
     if (!text) return;
     if (state.runtime.configured !== true) {
-      feedback('chat-feedback', (name) => `暂时无法给 ${name} 发送消息：宿主未配置有效模型路由，请回 Harness 的模型设置处理，无需在此填写密钥。`, true);
+      feedback('chat-feedback', (name) => `暂时无法给 ${name} 发送消息：宿主未配置有效模型路由，请在模型设置中检查，无需在此填写密钥。`, true);
       return;
     }
     const contextIds = [...attachments].filter((id) => state.journal.some((entry) => entry.id === id));

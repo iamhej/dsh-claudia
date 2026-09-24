@@ -178,11 +178,11 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       }
       if(req.method==='POST'&&(path==='/api/routines'||routinePath&&!routinePath[2])){
         const data=await readBody(req);routineMutation();
-        if(Object.keys(data).some(k=>!['job','revision','confirmDataSharing','confirmNetwork'].includes(k)))return json(res,400,{error:'Routine 不接受额外字段'});
+        if(Object.keys(data).some(k=>!['job','revision','confirmDataSharing','confirmNetwork'].includes(k)))return json(res,400,{error:'任务不接受额外字段'});
         const job=validateRoutine(data.job);
-        if(job.enabled&&job.allowNetwork&&!services.maintenance?.routines?.capability().network)return json(res,409,{error:'宿主尚未提供搜索能力；可以保存停用的任务定义'});
-        if(job.enabled&&job.allowNetwork&&data.confirmNetwork!==true)return json(res,400,{error:'请确认话题词外发搜索提供方、公开网页读取及可能的额外费用'});
-        if(job.enabled&&data.confirmDataSharing!==true)return json(res,400,{error:'启用或修改已启用任务需确认：过去24小时记录摘录与设定将发送给Harness所选模型，可能产生费用'});
+        if(job.enabled&&job.allowNetwork&&!services.maintenance?.routines?.capability().network)return json(res,409,{error:'搜索功能尚未就绪，可以先保存但暂不启用'});
+        if(job.enabled&&job.allowNetwork&&data.confirmNetwork!==true)return json(res,400,{error:'请确认：话题关键词会发给搜索服务，可能产生额外费用'});
+        if(job.enabled&&data.confirmDataSharing!==true)return json(res,400,{error:'启用任务需确认：最近的记录和设定会发送给模型处理，可能产生费用'});
         store.saveRoutine(job,data.revision,routinePath?.[1]??null);
         services.maintenance?.routines?.cancelChanged();
         return json(res,path==='/api/routines'?201:200,routineSnapshot());
@@ -275,7 +275,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       }
       if(req.method==='POST'&&path==='/api/settings'){
         const data=await readBody(req);
-        if(Object.keys(data).some(key=>!['assistantName',...boolKeys].includes(key)))return json(res,400,{error:'插件不接收模型端点或 API key，请在 Harness 中配置'});
+        if(Object.keys(data).some(key=>!['assistantName',...boolKeys].includes(key)))return json(res,400,{error:'模型和密钥请在主设置中配置'});
         if(busy())return json(res,409,{error:'请等待当前回复或配置操作结束'});
         const name=normalizeName(data.assistantName===undefined?store.get('assistantName','Claudia'):data.assistantName);
         if(boolKeys.some(key=>data[key]!==undefined&&typeof data[key]!=='boolean'))return json(res,400,{error:'开关必须是布尔值'});
@@ -306,18 +306,18 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
       if(req.method==='POST'&&path==='/api/chat'){
         const data=await readBody(req),text=requiredText(data.text,12000);
         if(data.contextIds!==undefined&&(!Array.isArray(data.contextIds)||data.contextIds.length>30||data.contextIds.some(id=>typeof id!=='string')))return json(res,400,{error:'附件列表无效'});
-        if(busy())return json(res,409,{error:`${store.get('assistantName','Claudia')} 正在回复，请先停止或等待完成`});
+        if(busy())return json(res,409,{error:`${store.get('assistantName','Claudia')} 正在思考，请等一下或先停止当前回复`});
         const sessionId=store.get('sessionId'),run={id:randomUUID(),sessionId,cancelled:false};active=run;
         run.done=new Promise(resolve=>{run.finish=resolve;});
         try {
-          const status=await runtime.status();if(!status.configured)return json(res,428,{error:'请在 Harness 模型设置中配置并选择默认模型。无需在插件重复填写 API key。'});
+          const status=await runtime.status();if(!status.configured)return json(res,428,{error:'还没有配置模型。请在设置中选择并配置默认模型。'});
           const context=makeContext(store,{allowContext:store.get('allowContext',false),contextIds:data.contextIds||[]});
           res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});
           const send=value=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+'\n');};
           let assistant=null,partial='',lastWrite=performance.now();
           const onClose=()=>{if(active===run&&!res.writableEnded){run.cancelled=true;(run.cancelPromise||=runtime.cancel(sessionId)).catch(()=>{});}};res.on('close',onClose);
           try {
-            send({type:'status',runId:run.id,text:'正在使用 Harness 已配置的模型…'});
+            send({type:'status',runId:run.id,text:'正在连接模型…'});
             await runtime.prepare(sessionId);if(run.cancelled)throw new Error('cancelled');
             store.addMessage('user',text);assistant=store.addMessage('assistant','','pending');send({type:'start',id:assistant.id,runId:run.id});
             const result=await runtime.run(sessionId,text+context,{onDelta:delta=>{partial+=delta;send({type:'delta',text:delta});const now=performance.now();if(now-lastWrite>=500){store.updateMessage(assistant.id,partial,'pending');lastWrite=now;}}});
@@ -332,7 +332,7 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
             // 收尾写也可能一起失败；不能让它盖掉本该给出的失败原因。
             if(assistant&&!committed)try{store.updateMessage(assistant.id,partial,run.cancelled?'cancelled':'error');}catch{}
             // Do not reflect arbitrary provider error text: it may contain credentials.
-            const message='模型调用或会话恢复失败，请在 Harness 检查模型、凭据与网络。原会话没有被清空。';
+            const message='回复失败了，请检查模型配置和网络连接。你之前的对话都还在。';
             runtime.error=run.cancelled||committed?'':message;
             if(committed&&assistant)send({type:'done',message:assistant,warning:'回复已保存到本地数据库，但 Markdown 副本同步失败；下次启动时会自动重建，请不要重复发送。'});
             else send({type:'error',error:run.cancelled?'已停止回复':committed?'内容已保存到本地数据库，但 Markdown 副本同步失败；本次未继续调用模型，请不要重复发送。':message});
