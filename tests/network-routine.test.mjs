@@ -171,7 +171,8 @@ for (const count of [1, 2, 3]) test(`两阶段成功 ${count} 条：仅真实搜
   assert.match(f.topicCalls[0].prompt, new RegExp(SECRET));
   assert.ok(f.topicCalls[0].prompt.includes(source.id));
   const { prompt, id, policy } = f.newsCalls[0];
-  const publicInput = JSON.parse(prompt.split('\n')[1]);
+  const jsonLine = prompt.split('\n').map(line => line.trim()).find(line => line.startsWith('{') && line.endsWith('}'));
+  const publicInput = JSON.parse(jsonLine);
   assert.deepEqual(publicInput, { queries: policy.queries, cutoff: END });
   assert.doesNotMatch(prompt, new RegExp(`${SECRET}|${source.id}|local_data_untrusted`));
   assert.notEqual(f.topicCalls[0].id, id); assert.notEqual(id, f.store.get('sessionId'));
@@ -206,10 +207,12 @@ test('近期已投递的条目不重复推送：重复标题与链接被剔除�
   assert.equal(second.items[0].url, 'https://example.com/news/3');
   assert.match(second.summary, /公开文章 3/);
   assert.doesNotMatch(second.summary, /公开文章 1/);
-  const lines = f.newsCalls.at(-1).prompt.split('\n');
-  assert.deepEqual(JSON.parse(lines[2]), { exclude: ['公开文章 1', '公开文章 2'] });
-  assert.doesNotMatch(lines[2], /example\.com|值得回看/);
-  assert.deepEqual(JSON.parse(lines[3]), { queries: f.newsCalls.at(-1).policy.queries, cutoff: END });
+  const lines = f.newsCalls.at(-1).prompt.split('\n').map(line => line.trim());
+  const excludeLine = lines.find(line => line.startsWith('{"exclude"'));
+  const queriesLine = lines.find(line => line.startsWith('{"queries"'));
+  assert.deepEqual(JSON.parse(excludeLine), { exclude: ['公开文章 1', '公开文章 2'] });
+  assert.doesNotMatch(excludeLine, /example\.com|值得回看/);
+  assert.deepEqual(JSON.parse(queriesLine), { queries: f.newsCalls.at(-1).policy.queries, cutoff: END });
   assert.doesNotMatch(f.newsCalls.at(-1).prompt, new RegExp(SECRET));
 });
 

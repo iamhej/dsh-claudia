@@ -1,6 +1,6 @@
 {
   "name": "dsh-claudia",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A personal, two-pane companion UI and Journal plugin for DeepSeek Harness",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/iamhej/dsh-claudia.git" },

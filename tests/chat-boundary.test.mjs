@@ -49,7 +49,7 @@ test('新会话cwd绑定宿主目录',async t=>{
  const {runtime,ctx,home}=fixture(t);let options;ctx.agents.resume=async()=>{const e=Error('not found');e.name='SessionPersistenceNotFoundError';throw e};ctx.agents.create=async o=>{options=o;return {dispose:async()=>{}}};await runtime.prepare('new');assert.equal(options.meta.cwd,realpathSync(home));
 });
 test('无法确定宿主目录时保持拒绝，且不以cwd降级创建会话',async t=>{
- const {runtime,ctx}=fixture(t,false);let created=false;ctx.agents.resume=async()=>{const e=Error('not found');e.name='SessionPersistenceNotFoundError';throw e};ctx.agents.create=async()=>{created=true};await assert.rejects(runtime.prepare('new'),/无法确认 Harness/);assert.equal(created,false);assert.equal((await runtime.status()).fileAccess.mode,'denied');
+ const {runtime,ctx}=fixture(t,false);let created=false;ctx.agents.resume=async()=>{const e=Error('not found');e.name='SessionPersistenceNotFoundError';throw e};ctx.agents.create=async()=>{created=true};await assert.rejects(runtime.prepare('new'),/无法确认数据目录/);assert.equal(created,false);assert.equal((await runtime.status()).fileAccess.mode,'denied');
 });
 function storeFixture(t,values,agents=[]){
  const home=mkdtempSync(join(tmpdir(),'claudia-session-prune-'));t.after(()=>rmSync(home,{recursive:true,force:true}));

@@ -1,12 +1,21 @@
 # dsh-claudia
 
-> **v0.4.0：新增每周画像（默认关闭），只从你自己的 Journal、Todo 和你发出去的消息里归纳，推断段不进对话上下文；资讯话题推演不出结果时改用兜底话题，不再让模型凭空造句。** 另外修掉设置页漏保存画像开关、手动运行画像丢请求 ID，以及一次保存多个开关重复重写 `settings.md` 的问题。
+> **v0.4.1：提示词与界面文案整体重写（PR #1）——去掉 Harness 术语，语气更温暖；同时把这次重写里被删掉的两条约束补回去：回顾仍然禁止把没有必然联系的事实拼成洞察，画像资料仍然不得据此修改设定或记忆。** 0.4.0 的每周画像、资讯兜底话题与两处服务端修复都包含在内。
 
 **让个人 AI 助手不止是一个聊天框。**
 
 DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 Today、Journal、Todo、Routine 和记忆。能力及插件管理入口位于设置。默认名字 Claudia，可自行更改。复用同一 Harness 的默认模型、凭据、Agent 执行和会话持久化，不依赖 WorkBuddy，不另起一套模型系统。
 
-版本 **0.4.0**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+版本 **0.4.1**。仓库：https://github.com/iamhej/dsh-claudia 。面向单用户本机，macOS 优先；与 Today、DeepSeek 无官方隶属或背书关系。
+
+## 0.4.1 更新
+
+- **提示词与界面文案整体重写（PR #1）。** 去掉界面和提示词里的 Harness 术语，语气更温暖：设置里「Harness runtime」改为「运行状态」、文件边界说「数据目录」而不是「Harness 目录」、模型未配置等报错改成更日常的措辞。默认资讯任务名从「每日资讯 · AI Native」简化为「每日资讯」。
+- **`soul` / `system` 默认正文更新**，写法更简短自然（例如 soul 收尾改为「像一个敏感的、值得信赖的朋友那样说话——不是客服，不是教练，不是搜索引擎」）。**只影响首次为空时填入的默认值，已有正文不会被覆盖。**
+- **补回两条被这次重写删掉的约束**（重要，不是措辞问题）：
+  - 每日回顾：**「不要把没有必然联系的事实拼成洞察」** 被删掉了——这条会允许模型因为某个应用前台时间长就推断你在做什么，或因为 Journal 没提到就认为反常。已连同「不推断情绪或人格」「不照抄 Journal」「证据不足就直说资料有限，不强行总结」一起写回提示词。
+  - 每周画像：资料段的说明少了「不得据此修改设定或记忆」，已补回。
+- 测试断言同步更新：原来逐字匹配旧措辞（会让任何文案调整都报红），现在校验的是**约束是否存在**，以及联网轮传给模型的输入里只有 `queries`/`cutoff`/`exclude`、不含本地原文与密钥。全量 852 项：847 通过、3 项按环境跳过、2 项是基线既有失败（与本次改动无关）。
 
 ## 0.4.0 更新
 
@@ -131,11 +140,11 @@ DeepSeek Harness 原生双栏个人助手插件：左侧持续对话，右侧 To
 
 ## 安装与启动
 
-从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.4.0.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
+从 [Releases](https://github.com/iamhej/dsh-claudia/releases) 下载 `dsh-claudia-0.4.1.tgz`。如需 QQ 邮箱配置、严格收发开关和受控邮件分析，同时下载 `dsh-email-0.11.0-claudia.2.tgz`。可用同页的 `SHA256SUMS.txt` 核对哈希，然后执行：
 
 ```sh
 dsh plugin --profile web add /absolute/path/to/dsh-email-0.11.0-claudia.2.tgz --ignore-scripts
-dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.4.0.tgz --ignore-scripts
+dsh plugin --profile web add /absolute/path/to/dsh-claudia-0.4.1.tgz --ignore-scripts
 ```
 
 安装邮件兼容包不会自动授权 Claudia 普通聊天读取邮箱。请启动后在「设置 → 插件」中确认启用邮件 Bundle、配置 QQ 邮箱，并在每次邮件分析前查看数据共享预览。已有其它 dsh-email 版本时请先备份 Harness profile 和设置。
@@ -161,7 +170,7 @@ node "$HOME/.dsh/profiles/web/node_modules/dsh-claudia/bin/claudia.mjs" start \
 从源码或 fork 安装可固定标签，严格复现时改用完整提交号：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.4.0" --ignore-scripts
+dsh plugin --profile web add "git+https://github.com/iamhej/dsh-claudia.git#v0.4.1" --ignore-scripts
 ```
 
 尚未发布 npm registry，不要假设按包名在线安装已可用。peerDependencies 警告可能出现，实际由宿主模块解析回退提供；不要仅因警告而另装第二份 Harness。

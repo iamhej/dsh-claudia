@@ -196,7 +196,7 @@ for (const [code, category] of [
     assert.equal(error.code, code);
     assert.equal(error.name, code === 'WEB_ABORTED' ? 'AbortError' : 'Error');
     assert.ok(error.message.includes(category));
-    assert.match(error.message, /Harness 设置→插件→插件配置→Web search/);
+    assert.match(error.message, /请检查搜索服务配置/);
     assert.match(error.message, /聊天可用不代表搜索可用/);
     assert.doesNotMatch(error.message, /额外.*API key|第三方.*密钥/);
     assert.deepEqual(Object.keys(error).sort(), ['code', 'name', 'routineSafe']);

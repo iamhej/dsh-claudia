@@ -9,7 +9,7 @@ import { startServer } from '../server.mjs';
 // 消息已写入 SQLite 但 Markdown 副本同步失败时，不能报成模型调用失败，
 // 也不能把已经保存的回复标成 error：回复照常交付，只附一条警告。
 // 不导入 index/maintenance/lifecycle，不加载宿主或真实模型。
-const GENERIC = '模型调用或会话恢复失败，请在 Harness 检查模型、凭据与网络。原会话没有被清空。';
+const GENERIC = '回复失败了，请检查模型配置和网络连接。你之前的对话都还在。';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'claudia-chat-commit-'));
