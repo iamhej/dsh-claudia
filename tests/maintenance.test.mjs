@@ -485,6 +485,27 @@ test('无安装注入时只 ready，允许校验文件与受限 GitHub CDN 重�
   const m = f.create(); await m.tick(now);
   assert.equal(m.status().update.state, 'ready'); assert.equal(urls.length, 4); assert.deepEqual(readFileSync(m.status().update.path), archive);
 });
+test('手动检查更新在自动更新关闭时也只读取稳定版，不下载或安装', async t => {
+  const f = fixture(t), urls = network(t), installs = [];
+  const m = f.create({ installUpdate: (...args) => installs.push(args) });
+  const result = await m.checkUpdate();
+  assert.equal(result.latestVersion, VERSION);
+  assert.equal(result.updateAvailable, true);
+  assert.equal(result.relation, 'older');
+  assert.equal(result.releaseUrl, `https://github.com/iamhej/dsh-claudia/releases/tag/v${VERSION}`);
+  assert.match(result.currentVersion, /^\d+\.\d+\.\d+/);
+  assert.equal(typeof result.checkedAt, 'string');
+  assert.deepEqual(urls, [API]);
+  assert.deepEqual(installs, []);
+  assert.equal(m.status().running, false);
+  assert.equal(m.status().update.state, 'disabled');
+});
+test('手动检查更新拒绝 draft 与非严格稳定版 tag', async t => {
+  for (const latest of [release({ draft: true }), release({ prerelease: true }), release({ tag_name: 'v99.2.0-beta.1' })]) {
+    const f = fixture(t), m = f.create(); network(t, latest);
+    await assert.rejects(() => m.checkUpdate(), /稳定版|版本格式/);
+  }
+});
 test('不接受 draft、prerelease、非严格 tag、缺少或伪造 digest', async t => {
   for (const latest of [release({ draft: true }), release({ prerelease: true }), release({ tag_name: '99.02.0' }), release({ tag_name: 'v99.2.0-beta.1' }), release({}, { digest: null }), release({}, { digest: 'sha256:伪造' })]) {
     const f = fixture(t, { autoUpdateEnabled: true }), urls = network(t, latest), m = f.create();

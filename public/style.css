@@ -64,13 +64,10 @@ svg { flex: 0 0 auto; }
 .tiny-star { display: inline-block; width: 10px; height: 10px; background: #8aa0ac; clip-path: polygon(50% 0, 64% 35%, 100% 50%, 64% 64%, 50% 100%, 35% 64%, 0 50%, 35% 35%); flex-shrink: 0; }
 .welcome h2 { font-size: clamp(24px, 2.25vw, 34px); line-height: 1.6; font-weight: 500; letter-spacing: -.9px; color: #455964; }
 .welcome-copy { font-size: 13px; color: #7b8992; line-height: 2; margin-top: 18px; max-width: 345px; }
-.welcome-note { display: flex; align-items: flex-start; gap: 9px; color: #778a96; font-size: 11px; line-height: 1.9; margin-top: 25px; }
-.welcome-note .icon { width: 14px; height: 14px; margin-top: 3px; }
 .prompt-list { display: flex; flex-direction: column; gap: 9px; margin-top: 30px; max-width: 340px; }
 .prompt-button { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; text-align: left; font-size: 12px; background: rgba(255,255,255,.48); border: 1px solid rgba(255,255,255,.52); border-radius: 14px; color: #637885; transition: background .15s, transform .15s; }
 .prompt-button:hover { background: rgba(255,255,255,.82); transform: translateX(2px); }
 .prompt-button .icon { width: 14px; height: 14px; opacity: .65; }
-.welcome-footnote { font-size: 10px; color: #909da5; line-height: 1.7; margin-top: 13px; }
 .message-list { display: flex; flex-direction: column; gap: 22px; }
 .message { max-width: 94%; align-self: flex-start; min-width: 0; }
 .message.is-user { align-self: flex-end; }
@@ -251,7 +248,7 @@ svg { flex: 0 0 auto; }
 .host-settings { margin-bottom: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(231,239,243,.5); }
 .host-settings h3 { font-size: 12px; font-weight: 500; color: #657c89; }
 .host-settings .runtime-details { margin-bottom: 12px; }
-.welcome-copy, #welcome-connection, .field-label, .field-help, .message-status, .toast, .connection-notice { overflow-wrap: anywhere; }
+.welcome-copy, .field-label, .field-help, .message-status, .toast, .connection-notice { overflow-wrap: anywhere; }
 .context-setting { background: #edf2f4; padding: 14px; border-radius: 12px; }
 .check-field strong { display: block; font-size: 11px; font-weight: 500; }
 .check-field small { display: block; font-size: 10px; color: #8b9aa3; line-height: 1.9; margin-top: 5px; }
@@ -269,7 +266,6 @@ svg { flex: 0 0 auto; }
 .service-details { margin-top: 10px; }
 .service-details > summary { cursor: pointer; font-size: 10px; line-height: 1.8; color: #718794; }
 .service-details .field-help { white-space: pre-wrap; }
-.settings-edit-hint { flex-shrink: 0; margin: 0 28px 8px; }
 .setting-switch .switch-status.is-error { color: var(--danger); }
 .automation-settings > .setting-switch { margin-top: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: rgba(231,239,243,.4); }
 @media (forced-colors: active) { .setting-switch > input { appearance: auto; -webkit-appearance: auto; } .setting-switch > input::before { display: none; } }
@@ -303,11 +299,13 @@ svg { flex: 0 0 auto; }
 .plugin-item { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(231,239,243,.4); }
 .plugin-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .plugin-heading h4 { min-width: 0; margin: 0; font-size: 12px; font-weight: 500; line-height: 1.8; overflow-wrap: anywhere; }
+.plugin-package-name { display: block; color: var(--muted); font-size: 9px; font-weight: 400; line-height: 1.6; }
 .plugin-version { min-width: 0; color: var(--muted); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
 .plugin-status { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .plugin-status .quiet-tag { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.8; }
 #plugins-boundary-title { font-size: 12px; font-weight: 500; line-height: 1.8; }
 #plugins-open-harness, #email-open-harness, #email-restart { margin-top: 12px; }
+.plugins-advanced { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
 .email-account, .email-guide { min-width: 0; margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
 .email-account { background: rgba(231,239,243,.4); }
 .email-account h4, .email-guide h4 { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.8; }
@@ -347,15 +345,13 @@ svg { flex: 0 0 auto; }
 .settings-footer-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .settings-footer-actions .field-help { margin: 0; flex: 1 1 120px; }
 .settings-footer-actions .primary-button { margin-left: auto; flex-shrink: 0; }
-#settings-open-harness { margin-top: 12px; }
 .restart-row { display: flex; align-items: center; gap: 16px; }
 .restart-row .field-help { margin: 0; flex: 1; white-space: pre-wrap; }
 .restart-button { flex: 0 0 auto; padding: 8px 12px; min-height: 34px; color: #54798c; background: #e5eef2; white-space: nowrap; }
 .restart-button.is-pending { background: #688b9d; color: #fff; }
 .restart-button.is-pending:hover:not(:disabled) { background: #537b91; }
 @media (max-width: 420px) { .restart-row { flex-wrap: wrap; } .restart-row .field-help { flex-basis: 100%; } }
-#restart-state[data-state="pending"] { background: #f0e8dc; color: #927951; }
-#restart-state[data-state="error"] { color: var(--danger); }
+.text-link { display: inline-block; margin-top: 8px; color: var(--blue); font-size: 11px; text-underline-offset: 3px; }
 @media (max-width: 650px) {
   .modal.settings-modal { padding: 0; }
   .settings-modal > .modal-header { padding: 21px 20px 14px; }
@@ -411,11 +407,9 @@ svg { flex: 0 0 auto; }
 .profile-editor .field-help.is-error { color: var(--danger); }
 .data-path { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.9; background: #edf2f4; border-radius: 10px; padding: 12px; }
 .logs-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
-.logs-view { margin-top: 12px; max-height: 260px; overflow: auto; background: #edf2f4; border-radius: 10px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.8; color: #4d6472; white-space: pre; overflow-wrap: normal; tab-size: 2; }
 .quiet-tag.is-warning { background: #f0e8dc; color: #927951; }
 @media (max-width: 420px) { .logs-actions { flex-basis: 100%; justify-content: flex-end; } }
 #maintenance-status { white-space: pre-wrap; }
-#background-toggle { margin-top: 13px; }
 .capability-line > span:first-child { overflow-wrap: anywhere; min-width: 0; }
 .capability-line > span:last-child { flex-shrink: 0; }
 
@@ -559,10 +553,8 @@ svg { flex: 0 0 auto; }
   .welcome h2 { font-size: 22px; line-height: 1.4; }
   .welcome h2 br { display: none; }
   .welcome-copy { font-size: 11px; margin-top: 10px; max-width: none; }
-  .welcome-note { margin-top: 12px; font-size: 10px; }
   .prompt-list { flex-direction: row; margin-top: 16px; max-width: none; }
   .prompt-button { flex: 1; padding: 10px 11px; font-size: 10px; gap: 4px; }
-  .welcome-footnote { font-size: 8px; }
   .composer-area { padding: 3px 14px 9px; }
   .composer { border-radius: 18px; padding: 9px 11px 7px; }
   .composer textarea { max-height: 90px; font-size: 16px; line-height: 1.5; min-height: 32px; padding-bottom: 4px; }

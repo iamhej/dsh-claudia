@@ -378,8 +378,8 @@ export class Maintenance {
     });
   }
   _assertUpdate() { if (!this._enabled('autoUpdateEnabled')) throw fail('自动更新已关闭'); }
-  async _request(url, maxBytes, timeout, sink) {
-    this._assertUpdate();
+  async _request(url, maxBytes, timeout, sink, requireEnabled = true) {
+    if (requireEnabled) this._assertUpdate();
     const initial = validURL(url);
     if (url !== RELEASE_API && (initial.hostname !== 'github.com' || initial.search
       || !/^\/iamhej\/dsh-claudia\/releases\/download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/(?:dsh-claudia-[0-9.]+(?:\.tgz(?:\.sha256)?|\.sha256)|SHA256SUMS(?:\.txt)?)$/.test(initial.pathname))) throw fail('拒绝非固定仓库更新地址');
@@ -388,7 +388,7 @@ export class Maintenance {
     let target = url;
     try {
       for (let redirects = 0; redirects <= 3; redirects++) {
-        this._assertUpdate();
+        if (requireEnabled) this._assertUpdate();
         let response;
         try {
           response = await fetch(target, { redirect: 'manual', signal: controller.signal,
@@ -422,7 +422,7 @@ export class Maintenance {
         const reader = response.body.getReader();
         try {
           while (true) {
-            this._assertUpdate();
+            if (requireEnabled) this._assertUpdate();
             const { done, value } = await reader.read();
             if (done) break;
             size += value.byteLength;
@@ -437,6 +437,34 @@ export class Maintenance {
       if (controller.signal.aborted) throw fail('更新请求超时或已取消');
       throw error;
     } finally { clearTimeout(timer); if (this.abort === controller) this.abort = null; }
+  }
+  async checkUpdate() {
+    if (this.closed) throw Object.assign(fail('维护服务已关闭'), { status: 503 });
+    if (this.operation || locks.has(this.runtime) || this.isBusy()) throw Object.assign(fail('当前有任务正在运行，请稍后再检查'), { status: 409 });
+    locks.set(this.runtime, this);
+    const operation = (async () => {
+      const currentVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+      semver(currentVersion);
+      let release;
+      try { release = JSON.parse((await this._request(RELEASE_API, 2 * 1024 * 1024, 15000, undefined, false)).toString('utf8')); }
+      catch (error) { if (error instanceof MaintenanceError) throw error; throw fail('GitHub release 响应不是有效 JSON'); }
+      if (release?.draft !== false || release?.prerelease !== false) throw fail('GitHub 最新发布不是稳定版');
+      if (typeof release.tag_name !== 'string' || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.tag_name)) throw fail('GitHub 发布版本格式无效');
+      const latestVersion = release.tag_name.slice(1);
+      const comparison = compareVersions(latestVersion, currentVersion);
+      return {
+        currentVersion, latestVersion, updateAvailable: comparison > 0,
+        relation: comparison > 0 ? 'older' : comparison < 0 ? 'newer' : 'current',
+        releaseUrl: `https://github.com/iamhej/dsh-claudia/releases/tag/${release.tag_name}`,
+        checkedAt: new Date().toISOString(),
+      };
+    })();
+    this.operation = operation;
+    try { return await operation; }
+    finally {
+      if (locks.get(this.runtime) === this) locks.delete(this.runtime);
+      if (this.operation === operation) this.operation = null;
+    }
   }
   async _update(window, now) {
     return this._attempt('update', window.end, now, async state => {

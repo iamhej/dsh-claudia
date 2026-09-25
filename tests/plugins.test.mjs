@@ -73,3 +73,19 @@ test('plugin endpoint read only, lazy, protected by origin, unrelated state unaf
   assert.equal((await fetch(app.url + '/api/plugins', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Claudia-Token': csrfToken }, body: '{}' })).status, 404);
   assert.equal(reads, 1);
 });
+test('manual update endpoint requires local CSRF, accepts no options, and delegates once', async t => {
+  const f = fixture(t), calls = [];
+  const update = { currentVersion: '0.4.2', latestVersion: '0.4.3', updateAvailable: true, relation: 'older', releaseUrl: 'https://github.com/iamhej/dsh-claudia/releases/tag/v0.4.3', checkedAt: '2026-09-26T00:00:00.000Z' };
+  const app = await startServer({ dataDir: join(f.home, 'data'), port: 0,
+    createRuntime: () => ({ status: async () => ({ configured: false }), selection: () => ({}), close: async () => {} }),
+    createServices: () => ({ maintenance: { status: () => ({ running: false }), async checkUpdate() { calls.push('check'); return update; }, async close() {} } }) });
+  t.after(() => app.close());
+  const { csrfToken } = await (await fetch(app.url + '/api/bootstrap')).json();
+  assert.equal((await fetch(app.url + '/api/update/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
+  const headers = { 'Content-Type': 'application/json', 'X-Claudia-Token': csrfToken };
+  assert.equal((await fetch(app.url + '/api/update/check', { method: 'POST', headers, body: '{"force":true}' })).status, 400);
+  const response = await fetch(app.url + '/api/update/check', { method: 'POST', headers, body: '{}' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { update });
+  assert.deepEqual(calls, ['check']);
+});

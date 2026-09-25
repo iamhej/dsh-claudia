@@ -169,6 +169,13 @@ export async function startServer({dataDir,port=4317,createRuntime,createService
         if(!services.restart)return json(res,503,{error:'请用新版 Claudia 启动器启动后重试'});
         const restart=services.restart.request();return json(res,202,{restart});
       }
+      if(req.method==='POST'&&path==='/api/update/check'){
+        const data=await readBody(req);if(Object.keys(data).length)return json(res,400,{error:'检查更新不接受外部参数'});
+        if(hostBusy())return json(res,409,{error:'宿主仍有活动会话或任务，请稍后检查更新'});
+        if(typeof services.maintenance?.checkUpdate!=='function')return json(res,503,{error:'当前服务不支持手动检查更新'});
+        try{return json(res,200,{update:await services.maintenance.checkUpdate()});}
+        catch(error){throw Object.assign(new Error(typeof error?.message==='string'&&error.message.length<=200?error.message:'检查更新失败，请稍后重试'),{status:error?.status===409?409:502});}
+      }
       if(req.method==='POST'&&path==='/api/prepare-restart'){await readBody(req);if(busy()||hostBusy())return json(res,409,{error:'宿主仍有活动会话或任务，请稍后重启'});drainingUntil=Date.now()+15000;return json(res,200,{ok:true,draining:true});}
       if(req.method==='GET'&&path==='/api/routines')return json(res,200,routineSnapshot());
       const routinePath=/^\/api\/routines\/([0-9a-f-]{36})(?:\/(run|history))?$/.exec(path);

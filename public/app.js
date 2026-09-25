@@ -16,8 +16,8 @@
     settings: { assistantName: defaultAssistantName, allowContext: false, provider: '', model: '' }, sessionId: '',
     dataDirectory: '', hostUrl: '', maintenance: {}, activity: {}, activitySummary: { apps: [], seconds: 0 },
     background: { enabled: false, supported: false }, features: {}, settingsEffect: {}, profileDefaults: {}, settingsRevision: undefined,
-    restart: { supported: false, pending: false, state: 'idle' }, busy: false,
-    logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' }, logLines: [], logsLoaded: false,
+    restart: { supported: false, pending: false, state: 'idle' }, updateCheck: null, busy: false,
+    logs: { dir: '', day: '', bytes: 0, capped: false, retainDays: 0, error: '' },
     routines: null, routineRuns: [], routineCapability: { network: false, verified: false, message: '正在读取 Routine 联网能力…' },
     // 状态接口只回最近一页回顾；更早的按需分页取，两者合并后按时间倒序显示。
     reflectionTotal: 0, reflectionHasMore: false
@@ -168,7 +168,6 @@
     $('assistant-name-input').title = name;
     $('memory-input-label').textContent = `想让 ${name} 记住的一件事`;
     $('welcome-copy').textContent = `零散的念头、今天的小事，或一个还没想明白的问题，都可以和 ${name} 聊聊。`;
-    $('settings-assistant-description').textContent = `${name} 使用你已配置的模型，无需在这里填写密钥。`;
     // 保留文案生成方式，让尚在显示的提示随改名更新，不修改对话或记录原文。
     for (const [id, message] of feedbackMessages) $(id).textContent = uiText(message);
     $('toast').textContent = uiText(toastMessage);
@@ -1446,8 +1445,8 @@
   }
   function renderServices() {
     $('data-directory').textContent = state.dataDirectory || (hasState ? '宿主未提供数据路径' : '尚未读取');
-    $('background-state').textContent = pending.has('background') ? '正在处理请求' : !hasState ? '尚未读取' : offline ? '状态待核对' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.error ? '状态异常' : state.background.enabled ? '已启用（服务返回）' : '未启用';
-    $('background-toggle').textContent = pending.has('background') ? '正在处理…' : state.background.enabled ? '停用' : '启用';
+    $('background-state').textContent = pending.has('background') ? '正在处理…' : !hasState ? '尚未读取' : offline ? '状态待核对' : !state.features.background ? '宿主未提供' : !state.background.supported ? '此宿主不支持' : state.background.error ? '状态异常' : state.background.enabled ? '已开启' : '已关闭';
+    $('background-toggle').checked = state.background.enabled === true;
     feedback('background-error', state.background.error, true);
     const reflectionStatus = [!hasState ? '尚未读取每日回顾状态' : state.settings.reflectionEnabled ? '自动回顾已保存开启 · 本地 05:00' : '自动回顾未开启 · 需保存并启用后才能手动运行', offline ? '连接异常，当前为上次状态' : '', taskStatus(state.maintenance.reflection), reflectionReceipt?.waiting ? '手动请求最终结果待核对' : ''].filter(Boolean).join(' · ');
     $('reflection-status').textContent = reflectionStatus;
@@ -1500,10 +1499,12 @@
       if (runtime.configured !== true) label = '尚未配置模型';
       else if (runtime.installed !== true || runtime.connected !== true) label = '等待服务就绪';
       else if (runtime.error) { label = '需要检查配置'; kind = 'error'; }
-      else if (runtime.modelVerified === true) { label = '已连接 · 已验证'; kind = 'connected'; }
-      else label = '已连接 · 待验证';
+      else if (runtime.modelVerified === true) { label = '运行正常'; kind = 'connected'; }
+      else label = '等待首次对话';
     }
+    const runtimeNeedsAttention = offline || hasState && (runtime.configured !== true || runtime.installed !== true || runtime.connected !== true || Boolean(runtime.error));
     $('runtime-label').textContent = label;
+    $('runtime-button').hidden = !runtimeNeedsAttention;
     $('runtime-button').dataset.state = kind;
     $('runtime-button').title = `${label} · 打开设置`;
     $('runtime-button').setAttribute('aria-label', $('runtime-button').title);
@@ -1518,20 +1519,9 @@
     $('model-provider').title = $('model-provider').textContent;
     $('model-name').textContent = state.settings.model || (hasState ? '尚未配置' : '—');
     $('model-name').title = $('model-name').textContent;
-    $('settings-host-hint').textContent = !hasState
-      ? '正在读取配置。打开或保存设置不会连接模型或发送消息。'
-      : offline ? '暂时无法读取配置，请重新加载。'
-        : runtime.configured === true
-          ? '模型已配置。更换模型请到主设置；保存这里的设置不会调用模型，但开启自动功能后会按计划调用并可能产生费用。'
-          : '尚未配置模型，请到主设置中配置。你仍然可以保存名字和偏好设定。';
-    $('welcome-connection').textContent = !hasState || offline
-      ? '读取状态后再开始对话。'
-      : runtime.configured === true
-        ? `模型已就绪。发送第一句话给 ${displayName()} 开始对话吧。Journal 和记忆也可以随时使用。`
-        : `与 ${displayName()} 对话前，请先配置模型。Journal、记忆和改名不受影响。`;
     feedback('runtime-error', runtime.error ? (name) => `${name} 遇到了问题：${runtime.error}` : '', true);
-    const hint = state.settings.allowContext ? '自动附带最多 10 条最近日志及 10 条记忆原文 · 上下文限 14000 字符' : '默认不自动发送日志与记忆原文';
-    $('context-hint').textContent = attachments.size ? `已附加 ${attachments.size} 条日志 · 发送时一并提供` : hint;
+    $('context-hint').textContent = attachments.size ? `已附加 ${attachments.size} 条日志 · 发送时一并提供` : '';
+    $('context-hint').hidden = !attachments.size;
   }
 
   function nearChatBottom() {
@@ -1701,86 +1691,30 @@
     updateControls();
   }
 
-  function formatBytes(value) {
-    if (!Number.isFinite(value) || value <= 0) return '0 B';
-    if (value < 1024) return `${value} B`;
-    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-    return `${(value / (1024 * 1024)).toFixed(2)} MB`;
-  }
-
   function renderLogs() {
-    if (!state.features.logs) {
-      $('logs-state').textContent = '不可用';
-      $('logs-summary').textContent = '当前宿主没有提供日志能力。';
-      return;
-    }
-    const logs = state.logs;
-    const failing = Boolean(logs.error);
-    $('logs-state').textContent = failing ? '写入异常' : logs.capped ? '今日已达上限' : logs.day ? '记录中' : '待写入';
-    $('logs-state').classList.toggle('is-warning', failing || logs.capped);
-    $('logs-path').textContent = logs.dir || '尚未创建日志目录';
-    const parts = [];
-    if (logs.day) parts.push(`当前文件 ${logs.day}.log，${formatBytes(logs.bytes)}`);
-    if (logs.retainDays) parts.push(`保留 ${logs.retainDays} 天`);
-    if (logs.capped) parts.push('已达当日上限，后续事件不再写入，明天自动恢复');
-    if (failing) parts.push(`写入失败：${logs.error}`);
-    if (!logs.day && !failing) parts.push('本次启动还没有写入事件');
-    $('logs-summary').textContent = parts.join('；');
-    if (state.logsLoaded) {
-      $('logs-view').textContent = state.logLines.length ? state.logLines.join('\n') : '最近两天没有记录到事件。';
-    }
-  }
-
-  async function loadLogs() {
-    if (!state.features.logs || pending.has('logs')) return false;
-    pending.add('logs');
-    updateControls();
-    try {
-      feedback('logs-feedback');
-      const payload = await api('/api/logs?limit=200');
-      // 只接受字符串行，避免任何非预期内容被当成 HTML 处理；textContent 本身也不解析标记。
-      state.logLines = Array.isArray(payload?.lines) ? payload.lines.filter((line) => typeof line === 'string').slice(-200) : [];
-      if (payload?.status) state.logs = {
-        dir: asText(payload.status.dir), day: asText(payload.status.day),
-        bytes: Number.isFinite(payload.status.bytes) ? payload.status.bytes : 0,
-        capped: payload.status.capped === true,
-        retainDays: Number.isFinite(payload.status.retainDays) ? payload.status.retainDays : 0,
-        error: asText(payload.status.error)
-      };
-      state.logsLoaded = true;
-      renderLogs();
-      $('logs-view').scrollTop = $('logs-view').scrollHeight;
-      return true;
-    } catch (error) {
-      feedback('logs-feedback', errorText(error), true);
-      return false;
-    } finally {
-      pending.delete('logs');
-      updateControls();
-    }
+    if (state.logs.error) feedback('logs-feedback', `日志写入异常：${state.logs.error}`, true);
   }
 
   function renderPlugins(payload) {
     const packages = payload.packages.filter((plugin) => !plugin.name.startsWith('@deepseek-ai/') && plugin.name !== 'dsh-claudia' && !plugin.name.endsWith('/dsh-claudia'));
-    $('plugins-profile').textContent = payload.profile.trim() || '未知';
-    $('plugins-runtime').textContent = payload.runtimeAvailable ? '可直接观测' : '不可直接观测（不代表插件未加载）';
-    feedback('plugins-status', [payload.available ? `已读取 · ${packages.length} 项扩展` : '插件清单暂不可用', payload.message].filter(Boolean).join('。'), !payload.available);
+    feedback('plugins-status', payload.available ? `共 ${packages.length} 个` : (payload.message || '暂时无法读取插件'), !payload.available);
     const list = $('plugins-list');
     list.replaceChildren();
     $('plugins-empty').hidden = payload.available && packages.length > 0;
     $('plugins-empty').textContent = payload.available ? '暂无扩展。' : '暂无法读取扩展清单，不能据此判断是否安装。请刷新后重试。';
     if (!payload.available) return;
-    const phases = { pending: '宿主等待就绪', active: '宿主已加载', failed: '宿主插件失败', loading: '宿主加载中', unloading: '宿主卸载中' };
+    const friendlyNames = { 'dsh-web-search-doubao-dsh0.1.5': '豆包搜索', 'dsh-email-dsh0.1.0': '邮件扩展', 'dsh-email-dsh0.1.0-claudia.2': '邮件扩展' };
+    const phases = { pending: '等待运行', active: '运行中', failed: '加载失败', loading: '加载中', unloading: '正在停止' };
     for (const plugin of packages) {
       const item = element('li', 'plugin-item');
       const heading = element('div', 'plugin-heading');
-      heading.append(element('h4', '', plugin.name), element('span', 'plugin-version', `版本：${plugin.version?.trim() || '未知'}`));
+      const title = friendlyNames[plugin.name] || plugin.name;
+      const name = element('h4', '', title);
+      if (title !== plugin.name) name.append(element('span', 'plugin-package-name', plugin.name));
+      heading.append(name, element('span', 'plugin-version', plugin.version?.trim() ? `v${plugin.version.trim()}` : '版本未知'));
       const status = element('div', 'plugin-status');
-      status.append(
-        element('span', 'quiet-tag', plugin.installed ? '已安装' : '未确认安装'),
-        element('span', 'quiet-tag', plugin.enabled === false ? '宿主已停用' : plugin.enabled === true ? '宿主已启用（不代表已加载）' : '宿主启停状态未知'),
-        element('span', plugin.phase === 'failed' ? 'quiet-tag is-warning' : 'quiet-tag', plugin.phase === null ? '运行阶段未直接观测' : phases[plugin.phase])
-      );
+      const statusLabel = plugin.phase ? phases[plugin.phase] : plugin.enabled === false ? '已停用' : plugin.installed ? '已安装' : '状态未知';
+      status.append(element('span', plugin.phase === 'failed' ? 'quiet-tag is-warning' : 'quiet-tag', statusLabel));
       item.append(heading, status);
       list.append(item);
     }
@@ -1794,9 +1728,7 @@
     $('plugins-list').setAttribute('aria-busy', 'true');
     $('plugins-list').replaceChildren();
     $('plugins-empty').hidden = true;
-    $('plugins-profile').textContent = '正在读取…';
-    $('plugins-runtime').textContent = '正在读取…';
-    feedback('plugins-status', '正在读取当前 profile 的正式 bundle 清单…');
+    feedback('plugins-status', '正在读取…');
     try {
       const payload = await api('/api/plugins');
       if (sequence !== pluginsReadSequence) return;
@@ -1811,15 +1743,13 @@
       renderPlugins(payload);
     } catch (error) {
       if (sequence !== pluginsReadSequence) return;
-      $('plugins-profile').textContent = '未能读取';
-      $('plugins-runtime').textContent = '未能读取';
       feedback('plugins-status', error.name === 'TimeoutError' ? '读取插件清单超时，请手动刷新重试。' : `读取插件清单失败：${errorText(error)}`, true);
       $('plugins-empty').textContent = '未显示插件清单，不能据此判断是否安装。';
       $('plugins-empty').hidden = false;
     } finally {
       if (sequence === pluginsReadSequence) {
         $('plugins-refresh').disabled = false;
-        $('plugins-refresh').textContent = '刷新插件';
+        $('plugins-refresh').textContent = '刷新';
         $('plugins-list').setAttribute('aria-busy', 'false');
       }
     }
@@ -2226,14 +2156,13 @@
     const reflectionSaving = [...reflectionDrafts.values()].some((draft) => draft.saving);
     $('open-folder').disabled = !usable || pending.has('open-folder');
     $('open-folder').disabled ||= !state.dataDirectory;
-    $('logs-refresh').disabled = !usable || !state.features.logs || pending.has('logs');
-    $('logs-refresh').textContent = pending.has('logs') ? '读取中…' : '刷新';
     $('open-logs').disabled = !usable || !state.features.logs || !state.logs.dir || pending.has('open-logs');
     $('background-toggle').disabled = !usable || !state.background.supported || pending.has('background') || configurationBusy;
-    $('profiles-refresh').disabled = booting || busy || settingsSaving || [...profileDrafts.values()].some((draft) => draft.saving);
+    $('update-check').disabled = !usable || pending.has('update-check') || state.maintenance.running === true;
+    $('update-check').textContent = pending.has('update-check') ? '检查中…' : '手动检查更新';
     $('reflections-refresh').disabled = booting || busy || reflectionSaving || pending.has('reflection-run');
     $('retry-load').disabled = booting || busy || restartInFlight;
-    for (const id of ['settings-open-harness', 'plugins-open-harness']) $(id).disabled = !usable || pending.has('open-harness');
+    $('plugins-open-harness').disabled = !usable || pending.has('open-harness');
     renderSettingsEffect();
     renderRestart();
     renderProfiles();
@@ -2342,7 +2271,7 @@
 
   function renderSettingsEffect() {
     const receipt = settingsReceipt;
-    const labels = { assistantName: '名字', allowContext: '附带个人记录', activityEnabled: '应用使用时长', reflectionEnabled: '每日回顾', autoUpdateEnabled: '自动更新', memorySuggestionsEnabled: '记忆候选', profileEnabled: '每周画像', settings: '设置', batch: '批量保存' };
+    const labels = { assistantName: '名字', allowContext: '对话中包含个人记忆', activityEnabled: '应用使用时长', reflectionEnabled: '每日回顾', autoUpdateEnabled: '自动更新', memorySuggestionsEnabled: '记忆候选', profileEnabled: '每周画像', settings: '设置', batch: '批量保存' };
     const parts = [];
     let isError = false;
     if (receipt?.sent) {
@@ -2409,8 +2338,6 @@
       $(`settings-panel-${value}`).hidden = !selected;
     }
     $('settings-content').scrollTop = 0;
-    // 首次切到数据与维护才读日志：隐藏的页面不做轮询，也不在打开设置时白拉一次。
-    if (name === 'maintenance' && !state.logsLoaded) void loadLogs();
     if (name === 'plugins') { void loadPlugins(); void loadEmail(); void loadEmailAccount(); }
     if (focus) {
       const tab = $(`settings-tab-${name}`);
@@ -2538,22 +2465,49 @@
   function renderRestart() {
     const restart = state.restart;
     const pendingRestart = restart.pending || restart.state === 'pending';
-    const label = restartInFlight ? '正在重启' : !hasState ? '尚未读取' : !restart.supported ? '不支持页面重启'
-      : offline ? '状态待核对' : restart.state === 'error' ? '重启异常' : restart.state === 'restarting' ? '正在重启' : pendingRestart ? '待重启' : '可手动重启';
-    $('restart-state').textContent = label;
-    $('restart-state').dataset.state = restartInFlight ? 'restarting' : pendingRestart ? 'pending' : restart.state;
-    $('restart-running-version').textContent = restart.runningVersion || '宿主未提供';
-    $('restart-installed-version').textContent = restart.installedVersion || '宿主未提供';
-    $('restart-description').textContent = [emailSnapshot?.needsRestart ? '邮件开关已单独保存，重启后生效。' : '', pendingRestart ? '更新已安装，重启后应用。' : '普通设置无需重启；必要时可重启 Claudia 的后台服务。', restart.message || restart.reason].filter(Boolean).join('\n');
+    const checked = state.updateCheck;
+    $('restart-running-version').textContent = checked?.currentVersion || restart.runningVersion || '宿主未提供';
+    $('update-latest-version').textContent = pending.has('update-check') ? '正在检查…' : checked?.latestVersion || '尚未检查';
+    $('update-release-link').hidden = !checked?.releaseUrl;
+    if (checked?.releaseUrl) $('update-release-link').href = checked.releaseUrl;
+    $('restart-description').textContent = pendingRestart
+      ? (restart.supported ? '更新已安装，重启后生效。' : '更新已安装，请从启动 Claudia 的入口重启后生效。')
+      : pending.has('update-check') ? '正在查询 GitHub 最新稳定版…'
+        : checked?.relation === 'older' ? `发现新版本 ${checked.latestVersion}。本次只完成检查，没有下载或安装。`
+          : checked?.relation === 'newer' ? '本机版本比 GitHub 最新稳定版更新。'
+            : checked?.relation === 'current' ? '当前已是 GitHub 最新稳定版。'
+              : '点击“手动检查更新”后，只比较版本，不会下载或安装。';
+    const showRestart = pendingRestart && restart.supported;
+    $('restart-actions').hidden = !showRestart;
     const blocked = restartBlocked();
-    const buttonLabel = restartInFlight || restart.state === 'restarting' ? '正在重启…' : pendingRestart ? '重启以应用更新' : '重启服务';
-    $('restart-hint').textContent = blocked;
-    $('restart-hint').hidden = !blocked;
+    const buttonLabel = restartInFlight || restart.state === 'restarting' ? '正在重启…' : '重启以应用更新';
+    $('restart-hint').textContent = showRestart ? blocked : '';
+    $('restart-hint').hidden = !showRestart || !blocked;
     $('restart-button').disabled = Boolean(blocked);
     $('restart-button').title = blocked || buttonLabel;
     $('restart-button').setAttribute('aria-label', buttonLabel);
     $('restart-button').classList.toggle('is-pending', pendingRestart);
     $('restart-button-label').textContent = buttonLabel;
+  }
+
+  async function checkUpdate() {
+    if (!canMutate() || pending.has('update-check')) return;
+    pending.add('update-check');
+    feedback('restart-feedback');
+    updateControls();
+    try {
+      const result = await api('/api/update/check', { method: 'POST', body: {}, timeout: 20000 });
+      const update = result?.update;
+      if (!update || typeof update.currentVersion !== 'string' || typeof update.latestVersion !== 'string'
+        || typeof update.updateAvailable !== 'boolean' || !['older', 'newer', 'current'].includes(update.relation)
+        || typeof update.releaseUrl !== 'string' || typeof update.checkedAt !== 'string') throw new Error('检查结果格式不完整，请更新服务后重试。');
+      state.updateCheck = update;
+    } catch (error) {
+      feedback('restart-feedback', errorText(error), true);
+    } finally {
+      pending.delete('update-check');
+      updateControls();
+    }
   }
 
   async function restartHost() {
@@ -2973,9 +2927,10 @@
       if (sent) await refreshStatus(false);
     }
   }
-  function toggleBackground() {
+  function toggleBackground(event) {
     if (!state.background.supported) return;
-    const enabled = !state.background.enabled;
+    const enabled = event.currentTarget.checked;
+    event.currentTarget.checked = state.background.enabled;
     void mutate('background', '/api/background', { enabled }, 'background-feedback', enabled ? '启用请求已完成，以上方宿主返回的后台状态为准。' : '停用请求已完成，以上方宿主返回的后台状态为准。', {
       timeout: 120000,
       confirm: enabled
@@ -2985,7 +2940,7 @@
   }
   function openHost(event) {
     const feedbackId = event.currentTarget.id === 'email-open-harness' ? 'email-host-feedback'
-      : event.currentTarget.id === 'plugins-open-harness' ? 'plugins-host-feedback' : 'settings-host-feedback';
+      : 'plugins-host-feedback';
     if (emailAccountBusy) return;
     void mutate('open-harness', '/api/open-harness', {}, feedbackId, event.currentTarget.id === 'email-open-harness'
       ? '已请求打开可选宿主入口。即使宿主页面无法打开，也可直接在 Claudia 的邮箱表单中配置。'
@@ -3420,8 +3375,8 @@
     if (settingsCloseResolver) { const resolve = settingsCloseResolver; settingsCloseResolver = null; resolve('cancel'); }
   });
   $('settings-recheck').addEventListener('click', async () => { await pollSettings(); scheduleSettingsPoll(); });
-  $('settings-open-harness').addEventListener('click', openHost);
   $('restart-button').addEventListener('click', () => void restartHost());
+  $('update-check').addEventListener('click', () => void checkUpdate());
   $('reset-session').addEventListener('click', resetSession);
   $('confirm-accept').addEventListener('click', () => settleConfirm(true));
   $('confirm-cancel').addEventListener('click', () => settleConfirm(false));
@@ -3506,11 +3461,9 @@
   window.setInterval(() => {
     if (!document.hidden && (reflectionReceipt?.waiting || state.maintenance.reflection?.running === true)) void refreshStatus();
   }, 3000);
-  $('profiles-refresh').addEventListener('click', () => void refreshStatus(true));
   $('open-folder').addEventListener('click', () => void mutate('open-folder', '/api/open-folder', {}, 'folder-feedback', '已请求本机打开数据文件夹。', { refresh: false }));
-  $('logs-refresh').addEventListener('click', () => void loadLogs());
   $('open-logs').addEventListener('click', () => void mutate('open-logs', '/api/open-logs', {}, 'logs-feedback', '已请求本机打开日志文件夹。', { refresh: false }));
-  $('background-toggle').addEventListener('click', toggleBackground);
+  $('background-toggle').addEventListener('change', toggleBackground);
   window.addEventListener('beforeunload', (event) => {
     if (activeRun?.source !== 'email-review' && !emailReviewPreparing && !routineDraftDirty && !routineDraftBlocked && !routineBusy && !routineUncertain && !hasUnsavedDrafts() && !emailBusy && !settingsSaving && !settingsReceipt?.uncertain && !restartInFlight && ![...profileDrafts.values(), ...reflectionDrafts.values()].some((draft) => draft.saving || draft.awaiting)) return;
     event.preventDefault();
